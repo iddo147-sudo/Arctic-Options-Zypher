@@ -62,6 +62,14 @@ class Breakout(TrackedStrategy):
         # classic trend-following exit. 0 = off (original behavior: stop/target fixed at
         # entry, never move). Needs atr_period set (uses the same ATR reading).
         trailing_stop_atr_mult=0,
+        # 2026-09-05 evening, round 2 of "train him harder": a genuinely different
+        # hypothesis than the exit-shape experiments above -- does requiring RSI
+        # confirmation (momentum actually supportive, not overbought/exhausted or weak)
+        # improve which breakouts get taken? OFF (both 0) by default; see
+        # validate_rsi_confirmation.py for the walk-forward check.
+        rsi_period=14,
+        min_rsi=0,  # reject entries with RSI below this (0 = no floor) -- avoids breakouts with weak underlying momentum
+        max_rsi=0,  # reject entries with RSI above this (0 = no ceiling) -- avoids buying an already-overbought/exhausted move
     )
 
     def __init__(self):
@@ -77,6 +85,10 @@ class Breakout(TrackedStrategy):
         # atr_period=0 (off) is the default. bt.indicators.ATR is backtrader's own Wilder
         # true-range average, needs High/Low (present in every cached CSV -- see fetch_data.py).
         self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period) if self.p.atr_period else None
+        # Always created (cheap, and rsi_period is never 0) -- only actually gates entries
+        # when min_rsi/max_rsi are set, same "compute it, only filter on it if asked" shape
+        # as volume_ratio/breakout_margin_pct/trend_strength_pct above.
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
         self.entry_bar = None
         self.entry_price = None
         self.atr_at_entry = None
@@ -104,6 +116,10 @@ class Breakout(TrackedStrategy):
                 return  # too far above trend already -- less room left before a pullback
             if self.p.max_breakout_margin_pct and breakout_margin_pct > self.p.max_breakout_margin_pct:
                 return  # cleared the breakout level by too much -- historically the weaker setup
+            if self.p.min_rsi and self.rsi[0] < self.p.min_rsi:
+                return  # momentum too weak to trust this breakout
+            if self.p.max_rsi and self.rsi[0] > self.p.max_rsi:
+                return  # already overbought/exhausted -- less room left before a pullback
 
             self.order = self.buy(size=self.p.size)
             self.entry_bar = len(self)
