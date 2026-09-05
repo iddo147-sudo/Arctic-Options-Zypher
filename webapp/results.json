@@ -15,7 +15,11 @@
     "min_volume_ratio": 0,
     "min_breakout_margin_pct": 0,
     "max_trend_strength_pct": 0,
-    "max_breakout_margin_pct": 0
+    "max_breakout_margin_pct": 0,
+    "atr_period": 0,
+    "stop_atr_mult": 2.0,
+    "target_atr_mult": 3.0,
+    "trailing_stop_atr_mult": 0
   },
   "start_value": 10000,
   "end_value": 12486.011642085577,

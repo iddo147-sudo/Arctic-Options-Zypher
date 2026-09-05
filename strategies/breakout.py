@@ -47,6 +47,21 @@ class Breakout(TrackedStrategy):
         # so this is a ceiling, not the existing min_breakout_margin_pct floor. Also OFF (0)
         # by default until validate_entry_filters.py confirms a value on the TEST window.
         max_breakout_margin_pct=0,  # reject entries clearing the breakout level by more than this % (0 = no cap)
+        # 2026-09-05 evening, "train him harder": stop_pct/target_pct are the SAME fixed %
+        # for every stock regardless of how volatile it actually is -- 5% is tight for TSLA
+        # and loose for a utility. ATR (average true range) scales the exit to each stock's
+        # OWN recent volatility instead. OFF (atr_period=0) by default -- only replaces the
+        # fixed stop_pct/target_pct above when set; see validate_atr_exits.py for the
+        # walk-forward check before trusting this over the already-validated fixed version.
+        atr_period=0,          # 0 = off, use stop_pct/target_pct above unchanged
+        stop_atr_mult=2.0,     # stop = entry_price - this many ATRs (at entry)
+        target_atr_mult=3.0,   # target = entry_price + this many ATRs (at entry)
+        # Trailing stop, independent of the fixed-vs-ATR choice above: once in a position,
+        # ratchets the stop up toward (highest close since entry - this many ATRs), never
+        # back down -- lets a winner run past the original target instead of capping it,
+        # classic trend-following exit. 0 = off (original behavior: stop/target fixed at
+        # entry, never move). Needs atr_period set (uses the same ATR reading).
+        trailing_stop_atr_mult=0,
     )
 
     def __init__(self):
@@ -58,8 +73,14 @@ class Breakout(TrackedStrategy):
         # breakout" against itself.
         self.highest = bt.indicators.Highest(self.data.close(-1), period=self.p.breakout_period)
         self.volume_ma = bt.indicators.SMA(self.data.volume, period=self.p.volume_ma_period)
+        # Only created when actually needed -- an indicator with period=0 would error, and
+        # atr_period=0 (off) is the default. bt.indicators.ATR is backtrader's own Wilder
+        # true-range average, needs High/Low (present in every cached CSV -- see fetch_data.py).
+        self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period) if self.p.atr_period else None
         self.entry_bar = None
         self.entry_price = None
+        self.atr_at_entry = None
+        self.highest_close_since_entry = None
         self._pending_features = None
         self.closed_trades = []  # one dict per CLOSED round-trip: entry features + outcome
 
@@ -87,6 +108,8 @@ class Breakout(TrackedStrategy):
             self.order = self.buy(size=self.p.size)
             self.entry_bar = len(self)
             self.entry_price = self.data.close[0]
+            self.atr_at_entry = self.atr[0] if self.atr is not None else None
+            self.highest_close_since_entry = self.data.close[0]
             self._pending_features = {
                 "breakout_margin_pct": round(breakout_margin_pct, 2),
                 "volume_ratio": round(volume_ratio, 2),
@@ -94,9 +117,30 @@ class Breakout(TrackedStrategy):
             }
             return
 
+        self.highest_close_since_entry = max(self.highest_close_since_entry, self.data.close[0])
+
+        # ATR-scaled stop/target when atr_period is set, otherwise the original fixed %.
+        if self.atr_at_entry:
+            stop_price = self.entry_price - self.p.stop_atr_mult * self.atr_at_entry
+            # target_atr_mult=0 means "no fixed target at all" -- rely entirely on the
+            # trailing stop (or max_hold_days) to exit, the classic trend-following shape
+            # of "let winners run" instead of capping every winner at a fixed multiple.
+            target_price = (self.entry_price + self.p.target_atr_mult * self.atr_at_entry
+                             if self.p.target_atr_mult else float("inf"))
+        else:
+            stop_price = self.entry_price * (1 - self.p.stop_pct)
+            target_price = self.entry_price * (1 + self.p.target_pct)
+
+        # Trailing stop only ever tightens (moves the effective stop up), never loosens it
+        # below whatever the fixed/ATR stop already was -- so this can only help a winner
+        # keep more profit, never make a loser's stop worse.
+        if self.p.trailing_stop_atr_mult and self.atr is not None:
+            trailing_price = self.highest_close_since_entry - self.p.trailing_stop_atr_mult * self.atr[0]
+            stop_price = max(stop_price, trailing_price)
+
         bars_held = len(self) - self.entry_bar
-        stopped_out = self.data.close[0] <= self.entry_price * (1 - self.p.stop_pct)
-        hit_target = self.data.close[0] >= self.entry_price * (1 + self.p.target_pct)
+        stopped_out = self.data.close[0] <= stop_price
+        hit_target = self.data.close[0] >= target_price
         if bars_held >= self.p.max_hold_days or stopped_out or hit_target:
             self.order = self.close()
 
