@@ -71,6 +71,30 @@ POSITION_STATE_PATH = WEBAPP_DIR / "agent_position_state.json"
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "").rstrip("/")
 AGENT_REPORT_TOKEN = os.environ.get("AGENT_REPORT_TOKEN", "")
 
+# ntfy.sh: a free push-notification relay, no account/signup needed on either end -- POST to
+# a topic URL, anyone subscribed to that exact topic (via the ntfy app or ntfy.sh/<topic> in
+# a browser) gets a push. The topic name IS the access control (public service, no auth), so
+# it needs to be an unguessable random string, not something like "my-trading-bot" -- unset
+# means no notification is sent, same "off unless configured" pattern as DASHBOARD_URL above.
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+
+
+def notify_phone(title: str, message: str, tags: str = "moneybag"):
+    if not NTFY_TOPIC:
+        return
+    req = urllib.request.Request(
+        f"https://ntfy.sh/{NTFY_TOPIC}",
+        data=message.encode("utf-8"),
+        headers={"Title": title, "Tags": tags},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except urllib.error.URLError as e:
+        # Same "never let a notification hiccup fail the actual trading run" reasoning as
+        # _report() below -- the order already went through (or didn't) either way.
+        print(f"[warn] failed to send phone notification: {e}")
+
 
 def _report(path: str, payload: dict):
     if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
@@ -105,6 +129,16 @@ def log_live_trade(symbol, side, price, size, reason):
     trades.append(trade)
     TRADES_PATH.write_text(json.dumps(trades, indent=2))
     _report("/api/report_trade", trade)
+
+    # "submitted", not "bought"/"sold" -- 2026-09-05 real incident: a market order placed
+    # while the market's closed sits ACCEPTED for hours before it actually fills, so this
+    # notification fires on submission, same moment the order actually enters the market.
+    verb = "Submitted BUY" if side == "BUY" else "Submitted SELL"
+    notify_phone(
+        title=f"{verb} {symbol}",
+        message=f"{size} shares @ ${price:.2f} -- {reason}",
+        tags="moneybag" if side == "BUY" else "chart_with_downwards_trend",
+    )
 
 
 def load_entry_dates() -> dict:
