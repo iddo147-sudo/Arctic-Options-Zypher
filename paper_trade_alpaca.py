@@ -30,8 +30,8 @@ import urllib.request
 
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -170,6 +170,17 @@ def check_symbol(trading, data_client, symbol: str, shares: int, entry_dates: di
             return {"position": 0, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
                     "highest": round(highest, 2), "last_action": f"holding flat ({reason})"}
 
+        # 2026-09-05 real incident: a BUY submitted while the market's closed sits as
+        # ACCEPTED (not FILLED) for hours -- get_open_position() legitimately sees "no
+        # position" the whole time, so re-running before it fills would submit a SECOND buy
+        # for the same signal. Checking for an already-open order closes that gap.
+        open_orders = trading.get_orders(GetOrdersRequest(
+            symbols=[symbol], status=QueryOrderStatus.OPEN))
+        if open_orders:
+            print(f"{symbol}: breakout confirmed but an order is already pending (id {open_orders[0].id}) -- not submitting another.")
+            return {"position": 0, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
+                    "highest": round(highest, 2), "last_action": "breakout confirmed, order already pending"}
+
         order = MarketOrderRequest(symbol=symbol, qty=shares, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
         submitted = trading.submit_order(order)
         entry_dates[symbol] = datetime.date.today().isoformat()
@@ -194,6 +205,15 @@ def check_symbol(trading, data_client, symbol: str, shares: int, entry_dates: di
                 "entry_price": round(avg_entry_price, 2), "last_action": "holding position"}
 
     reason = "stop-loss" if stopped_out else "profit target" if hit_target else "max hold days"
+
+    # Same reasoning as the entry-side guard above -- a SELL submitted while the position
+    # hasn't been reduced yet would otherwise stack a second closing order on top.
+    open_orders = trading.get_orders(GetOrdersRequest(symbols=[symbol], status=QueryOrderStatus.OPEN))
+    if open_orders:
+        print(f"{symbol}: exit condition met but an order is already pending (id {open_orders[0].id}) -- not submitting another.")
+        return {"position": current_qty, "close": round(today_close, 2), "entry_price": round(avg_entry_price, 2),
+                "last_action": f"exit ({reason}) pending, order already in flight"}
+
     order = MarketOrderRequest(symbol=symbol, qty=abs(current_qty), side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
     submitted = trading.submit_order(order)
     entry_dates.pop(symbol, None)
