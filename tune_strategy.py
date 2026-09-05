@@ -46,6 +46,11 @@ PARAM_GRIDS = {
         "trend_period": [50, 100],
         "stop_pct": [0.03, 0.05, 0.08],
     },
+    "breakdown": {
+        "breakdown_period": [10, 20, 30],
+        "trend_period": [50, 100],
+        "stop_pct": [0.03, 0.05, 0.08],
+    },
     "momentum": {
         "lookback": [5, 10, 20],
         "entry_threshold": [0.02, 0.04, 0.06],

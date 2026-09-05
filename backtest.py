@@ -26,6 +26,7 @@ from strategies.ma_crossover import MACrossover
 from strategies.momentum import Momentum
 from strategies.rsi_reversion import RSIReversion
 from strategies.breakout import Breakout
+from strategies.breakdown import Breakdown
 
 DATA_DIR = pathlib.Path(__file__).parent / "data"
 WEBAPP_DIR = pathlib.Path(__file__).parent / "webapp"
@@ -38,6 +39,7 @@ STRATEGIES = {
     "momentum": Momentum,
     "rsi": RSIReversion,
     "breakout": Breakout,
+    "breakdown": Breakdown,
 }
 
 
