@@ -1,21 +1,19 @@
 """
-Runs MACrossover live against Alpaca's PAPER trading account -- same strategy class the
-backtester uses. Alpaca instead of IBKR for the stock version: no desktop Gateway app to
-run, just a REST API and a free paper account from signup alone (no ID upload needed until
-you want real money later).
+Runs the validated Breakout strategy live against Alpaca's PAPER trading account -- the
+strategy compare_strategies.py/tune_strategy.py's walk-forward testing actually confirmed
+(Sharpe 3.188, 61.6% win rate on unseen data), not the original MACrossover plumbing-check
+version this file used before 2026-09-05.
 
-SETUP (one-time):
-  1. Sign up free at https://alpaca.markets -- paper trading is available immediately,
-     before any identity verification.
-  2. Dashboard -> API Keys -> generate a PAPER key pair (there are separate keys for
-     paper vs live -- make sure you copy the paper ones).
-  3. Set them as environment variables (don't hardcode secrets into this file):
-       setx ALPACA_API_KEY "your-key-id"        (Windows, then open a new terminal)
-       setx ALPACA_SECRET_KEY "your-secret-key"
+Meant to be re-run on a schedule (cron/Task Scheduler), once per trading day after the
+close -- NOT left running as a daemon at this stage, same design choice as the original
+version. Each run is a fresh process, so exit logic (stop-loss/target/max_hold) needs
+position state to survive between runs: Alpaca's own position record is the source of truth
+for entry price (avg_entry_price) and quantity, but Alpaca doesn't track WHEN a position was
+opened, so entry date alone is persisted locally in agent_position_state.json.
 
+SETUP: see README.md's Paper trading section for getting a free Alpaca paper key pair.
 SAFETY: `paper=True` is hardcoded below, not a flag -- this script has no code path that can
-submit a live order. Going live later means writing that deliberately, not flipping a switch
-on this file.
+submit a live order.
 """
 
 import argparse
@@ -31,18 +29,60 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-from strategies.ma_crossover import MACrossover
+from strategies.breakout import Breakout
 
-STATUS_PATH = pathlib.Path(__file__).parent / "webapp" / "agent_status.json"
+WEBAPP_DIR = pathlib.Path(__file__).parent / "webapp"
+STATUS_PATH = WEBAPP_DIR / "agent_status.json"
+TRADES_PATH = WEBAPP_DIR / "agent_trades.json"
+# Just the entry date -- everything else about an open position (qty, avg fill price) is
+# read straight from Alpaca each run rather than duplicated here, so this file can never
+# drift out of sync with what the broker actually thinks we hold.
+POSITION_STATE_PATH = WEBAPP_DIR / "agent_position_state.json"
 
 
 def write_status(**fields):
-    """Lets the dashboard's 'agent connected' badge mean something real -- see webapp/main.
-    py's own /api/status, which just reports available=false until this file exists."""
+    """Lets the dashboard's 'agent connected' badge mean something real -- see
+    webapp/main.py's own /api/status, which just reports connected=false until this file
+    exists."""
     STATUS_PATH.parent.mkdir(exist_ok=True)
-    payload = {"connected": True, "account_type": "paper", "updated_at": datetime.datetime.now().isoformat(timespec="seconds")}
+    payload = {
+        "connected": True,
+        "account_type": "paper",
+        "strategy": "breakout",
+        "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
     payload.update(fields)
     STATUS_PATH.write_text(json.dumps(payload, indent=2))
+
+
+def log_live_trade(side, price, size, reason):
+    """Appends one real fill to agent_trades.json -- the dashboard's 'Live trades' panel,
+    kept entirely separate from a backtest's trade_log so the two are never confused for
+    each other."""
+    trades = json.loads(TRADES_PATH.read_text()) if TRADES_PATH.exists() else []
+    trades.append({
+        "date": datetime.date.today().isoformat(),
+        "side": side,
+        "price": round(price, 2),
+        "size": size,
+        "reason": reason,
+    })
+    TRADES_PATH.write_text(json.dumps(trades, indent=2))
+
+
+def load_entry_date():
+    if POSITION_STATE_PATH.exists():
+        return json.loads(POSITION_STATE_PATH.read_text()).get("entry_date")
+    return None
+
+
+def save_entry_date(entry_date: str):
+    POSITION_STATE_PATH.write_text(json.dumps({"entry_date": entry_date}))
+
+
+def clear_entry_date():
+    if POSITION_STATE_PATH.exists():
+        POSITION_STATE_PATH.unlink()
 
 
 def get_clients() -> tuple[TradingClient, StockHistoricalDataClient]:
@@ -51,80 +91,99 @@ def get_clients() -> tuple[TradingClient, StockHistoricalDataClient]:
     if not api_key or not secret_key:
         raise SystemExit(
             "Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables first -- "
-            "see this script's module docstring for where to get them."
+            "see README.md's Paper trading section for where to get them."
         )
     trading = TradingClient(api_key, secret_key, paper=True)  # hardcoded -- see SAFETY note above
     data = StockHistoricalDataClient(api_key, secret_key)
     return trading, data
 
 
-def run(symbol: str, allow_short: bool):
+def run(symbol: str, shares: int):
     trading, data_client = get_clients()
+    p = Breakout.params
 
     account = trading.get_account()
     print(f"Connected to Alpaca paper account -- buying power ${float(account.buying_power):,.2f}")
-    write_status(symbol=symbol, buying_power=float(account.buying_power), last_action="checking")
 
+    lookback_days = max(p.trend_period, p.breakout_period) * 2  # generous buffer for weekends/holidays
     bars_request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Day,
-        start=datetime.datetime.now() - datetime.timedelta(days=90),
+        start=datetime.datetime.now() - datetime.timedelta(days=lookback_days),
     )
     bars = data_client.get_stock_bars(bars_request).df
-    if bars is None or len(bars) < MACrossover.params.slow_period + 1:
-        raise SystemExit("Not enough historical bars returned to compute the slow moving average yet.")
+    if bars is None or len(bars) < p.trend_period + 1:
+        raise SystemExit(f"Not enough historical bars returned to compute the {p.trend_period}-day trend yet.")
 
     closes = bars["close"]
-    fast = closes.rolling(MACrossover.params.fast_period).mean()
-    slow = closes.rolling(MACrossover.params.slow_period).mean()
-    crossed_up = fast.iloc[-2] <= slow.iloc[-2] and fast.iloc[-1] > slow.iloc[-1]
-    crossed_down = fast.iloc[-2] >= slow.iloc[-2] and fast.iloc[-1] < slow.iloc[-1]
+    today_close = float(closes.iloc[-1])
+    trend_ma = float(closes.rolling(p.trend_period).mean().iloc[-1])
+    # Highest close of the PRIOR breakout_period days, excluding today -- same convention as
+    # strategies/breakout.py's own bt.indicators.Highest(self.data.close(-1), ...).
+    highest = float(closes.iloc[-(p.breakout_period + 1):-1].max())
 
     try:
         position = trading.get_open_position(symbol)
-        current_qty = int(float(position.qty)) * (1 if position.side == "long" else -1)
+        current_qty = int(float(position.qty))
+        avg_entry_price = float(position.avg_entry_price)
     except Exception:
-        current_qty = 0  # no open position in this symbol
+        current_qty = 0
+        avg_entry_price = None
 
-    print(f"{datetime.datetime.now().isoformat(timespec='seconds')} "
-          f"{symbol} fast={fast.iloc[-1]:.2f} slow={slow.iloc[-1]:.2f} position={current_qty}")
-    write_status(symbol=symbol, position=current_qty, fast=round(float(fast.iloc[-1]), 2),
-                 slow=round(float(slow.iloc[-1]), 2), last_action="checking")
+    print(f"{datetime.date.today().isoformat()} {symbol} close={today_close:.2f} "
+          f"trend_ma={trend_ma:.2f} highest={highest:.2f} position={current_qty}")
 
-    # Same target-position logic as backtest.py's MACrossover.next() and the IBKR version
-    # in paper_trade.py -- one order for whatever delta gets from wherever we are to target.
-    shares = MACrossover.params.size
-    if crossed_up:
-        target = shares
-    elif crossed_down:
-        target = -shares if allow_short else 0
-    else:
-        print("No crossover -- holding.")
-        write_status(symbol=symbol, position=current_qty, last_action="holding (no crossover)")
+    if current_qty == 0:
+        clear_entry_date()  # flat -- any stale entry_date from a prior run no longer applies
+        in_uptrend = today_close > trend_ma
+        broke_out = today_close > highest
+        if not (in_uptrend and broke_out):
+            reason = "no breakout" if not broke_out else "below trend"
+            print(f"No entry -- {reason}. Holding flat.")
+            write_status(symbol=symbol, position=0, close=round(today_close, 2),
+                         trend_ma=round(trend_ma, 2), highest=round(highest, 2),
+                         last_action=f"holding flat ({reason})")
+            return
+
+        order = MarketOrderRequest(symbol=symbol, qty=shares, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+        submitted = trading.submit_order(order)
+        save_entry_date(datetime.date.today().isoformat())
+        log_live_trade("BUY", today_close, shares, "trend breakout")
+        print(f"Submitted BUY {shares} {symbol} -- order id {submitted.id}")
+        write_status(symbol=symbol, position=shares, close=round(today_close, 2),
+                     trend_ma=round(trend_ma, 2), highest=round(highest, 2),
+                     last_action=f"BUY {shares} {symbol}", last_order_id=str(submitted.id))
         return
 
-    delta = target - current_qty
-    if delta == 0:
-        print("Already at target position -- holding.")
-        write_status(symbol=symbol, position=current_qty, last_action="holding (already at target)")
+    # In a position -- check exits. avg_entry_price comes straight from Alpaca (the real
+    # fill price), not something this script tracked itself.
+    entry_date_str = load_entry_date()
+    bars_held = (datetime.date.today() - datetime.date.fromisoformat(entry_date_str)).days if entry_date_str else None
+
+    stopped_out = today_close <= avg_entry_price * (1 - p.stop_pct)
+    hit_target = today_close >= avg_entry_price * (1 + p.target_pct)
+    timed_out = bars_held is not None and bars_held >= p.max_hold_days
+
+    if not (stopped_out or hit_target or timed_out):
+        print(f"Holding {current_qty} {symbol} @ entry {avg_entry_price:.2f} -- no exit condition met.")
+        write_status(symbol=symbol, position=current_qty, close=round(today_close, 2),
+                     entry_price=round(avg_entry_price, 2), last_action="holding position")
         return
 
-    order = MarketOrderRequest(
-        symbol=symbol,
-        qty=abs(delta),
-        side=OrderSide.BUY if delta > 0 else OrderSide.SELL,
-        time_in_force=TimeInForce.DAY,
-    )
+    reason = "stop-loss" if stopped_out else "profit target" if hit_target else "max hold days"
+    order = MarketOrderRequest(symbol=symbol, qty=abs(current_qty), side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
     submitted = trading.submit_order(order)
-    print(f"Submitted {order.side.value.upper()} {abs(delta)} {symbol} -- order id {submitted.id}")
-    write_status(symbol=symbol, position=target, last_action=f"{order.side.value.upper()} {abs(delta)} {symbol}",
-                 last_order_id=str(submitted.id))
+    clear_entry_date()
+    log_live_trade("SELL", today_close, abs(current_qty), reason)
+    print(f"Submitted SELL {abs(current_qty)} {symbol} -- order id {submitted.id} ({reason})")
+    write_status(symbol=symbol, position=0, close=round(today_close, 2),
+                 last_action=f"SELL {abs(current_qty)} {symbol} ({reason})", last_order_id=str(submitted.id))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--symbol", default="SPY", help="Stock ticker to trade, e.g. SPY, AAPL")
-    parser.add_argument("--allow-short", action="store_true", help="Flip short on a bearish crossover instead of just going flat")
+    parser.add_argument("--symbol", default="SPY", help="Stock ticker to trade -- any of the 8 validated in tune_strategy.py's default set")
+    parser.add_argument("--shares", type=int, default=Breakout.params.size, help="Flat share count per trade")
     args = parser.parse_args()
 
-    run(args.symbol, args.allow_short)
+    run(args.symbol, args.shares)

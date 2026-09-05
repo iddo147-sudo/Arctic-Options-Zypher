@@ -11,8 +11,10 @@ works end to end; the real strategy work is what replaces this once that's confi
 
 import backtrader as bt
 
+from strategies.base import TrackedStrategy
 
-class MACrossover(bt.Strategy):
+
+class MACrossover(TrackedStrategy):
     params = dict(
         fast_period=10,
         slow_period=30,
@@ -25,46 +27,13 @@ class MACrossover(bt.Strategy):
     )
 
     def __init__(self):
+        super().__init__()
         self.fast_ma = bt.indicators.SMA(self.data.close, period=self.p.fast_period)
         self.slow_ma = bt.indicators.SMA(self.data.close, period=self.p.slow_period)
         self.crossover = bt.indicators.CrossOver(self.fast_ma, self.slow_ma)
-        self.order = None
-
-        # Recorded every bar so the web dashboard has something to plot -- an equity curve
-        # and a price/trade-marker series, not just the end-of-run summary numbers.
-        self.equity_curve = []
-        self.price_series = []
-        self.trade_log = []
-
-    def log(self, text):
-        dt = self.data.datetime.date(0)
-        print(f"{dt.isoformat()} {text}")
-
-    def notify_order(self, order):
-        if order.status in (order.Submitted, order.Accepted):
-            return
-        if order.status == order.Completed:
-            side = "BUY" if order.isbuy() else "SELL"
-            self.log(f"{side} filled @ {order.executed.price:.2f}")
-            self.trade_log.append({
-                "date": self.data.datetime.date(0).isoformat(),
-                "side": side,
-                "price": order.executed.price,
-                "size": order.executed.size,
-            })
-        elif order.status in (order.Canceled, order.Margin, order.Rejected):
-            self.log(f"Order failed: {order.getstatusname()}")
-        self.order = None
 
     def next(self):
-        self.equity_curve.append({
-            "date": self.data.datetime.date(0).isoformat(),
-            "value": self.broker.getvalue(),
-        })
-        self.price_series.append({
-            "date": self.data.datetime.date(0).isoformat(),
-            "close": self.data.close[0],
-        })
+        self.record()
 
         if self.order:
             return  # one order in flight at a time -- no pyramiding into a pending fill

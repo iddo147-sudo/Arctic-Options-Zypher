@@ -210,7 +210,7 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
   <header>
     <div>
       <h1>Swing Bot</h1>
-      <p class="sub">MA crossover, stocks/ETFs — paper only until proven.</p>
+      <p class="sub">Trend-filtered breakout, stocks/ETFs — paper only until proven.</p>
     </div>
     <div class="spacer"></div>
     <div class="mascot">
@@ -234,6 +234,12 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
     <h2>Live agent</h2>
     <p class="hint">Written by paper_trade_alpaca.py the last time it ran -- this only exists once that script has actually run against your Alpaca paper account.</p>
     <div class="tiles" id="agentTiles"></div>
+  </section>
+
+  <section class="panel" id="liveTradesPanel" style="display:none">
+    <h2>Live trades</h2>
+    <p class="hint">Real fills submitted by paper_trade_alpaca.py against your Alpaca paper account -- separate from the backtest trade log below, which is simulated.</p>
+    <div id="liveTradeTableWrap"><div class="empty">Loading…</div></div>
   </section>
 
   <section class="panel">
@@ -353,11 +359,12 @@ function updateMascot(status) {
 }
 
 async function load() {
-  let results, status;
+  let results, status, liveTrades;
   try {
-    [results, status] = await Promise.all([
+    [results, status, liveTrades] = await Promise.all([
       fetch("/api/results").then((r) => r.json()),
       fetch("/api/status").then((r) => r.json()),
+      fetch("/api/live_trades").then((r) => r.json()),
     ]);
   } catch (e) {
     $("#agentText").textContent = "dashboard API unreachable";
@@ -366,24 +373,35 @@ async function load() {
 
   const dot = $("#agentDot"), text = $("#agentText");
   const agentPanel = $("#agentPanel");
+  const liveTradesPanel = $("#liveTradesPanel");
   if (status.connected) {
     dot.classList.add("live");
     text.textContent = "agent connected — " + (status.account_type || "paper");
     agentPanel.style.display = "";
+    liveTradesPanel.style.display = "";
     $("#agentTiles").innerHTML = [
       ["Symbol", status.symbol || "—", status.updated_at ? "as of " + new Date(status.updated_at).toLocaleString() : "", "up"],
-      ["Position", status.position != null ? status.position : "—", "shares (negative = short)", status.position > 0 ? "up" : status.position < 0 ? "down" : "up"],
-      ["Fast / slow MA", (status.fast != null ? fmtNum(status.fast) : "—") + " / " + (status.slow != null ? fmtNum(status.slow) : "—"), "", "up"],
+      ["Position", status.position != null ? status.position : "—", "shares (breakout is long-only)", status.position > 0 ? "up" : "up"],
+      ["Close / trend SMA", (status.close != null ? fmtNum(status.close) : "—") + " / " + (status.trend_ma != null ? fmtNum(status.trend_ma) : "—"), status.highest != null ? "breakout level " + fmtNum(status.highest) : (status.entry_price != null ? "entry " + fmtNum(status.entry_price) : ""), "up"],
       ["Last action", status.last_action || "—", status.last_order_id ? "order " + status.last_order_id.slice(0, 8) : "", "up"],
       ["Buying power", status.buying_power != null ? "$" + Number(status.buying_power).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", "paper account", "up"],
     ].map(([label, value, foot, tone]) =>
       `<div class="tile"><div class="label">${esc(label)}</div>` +
       `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
     ).join("");
+
+    const liveRows = (liveTrades || []).slice().reverse();
+    $("#liveTradeTableWrap").innerHTML = !liveRows.length
+      ? `<div class="empty">No live trades yet.</div>`
+      : "<table class=\"data\"><thead><tr><th>Date</th><th>Side</th><th>Price</th><th>Size</th><th>Reason</th></tr></thead><tbody>" +
+        liveRows.map((t) => `<tr><td>${esc(t.date)}</td><td class="side-${t.side.toLowerCase()}">${esc(t.side)}</td>` +
+          `<td>${fmtNum(t.price)}</td><td>${esc(t.size)}</td><td>${esc(t.reason || "")}</td></tr>`).join("") +
+        "</tbody></table>";
   } else {
     dot.classList.remove("live");
     text.textContent = "no live agent — backtest mode";
     agentPanel.style.display = "none";
+    liveTradesPanel.style.display = "none";
   }
 
   updateMascot(status);
@@ -394,12 +412,23 @@ async function load() {
     return;
   }
 
+  // Strategy-agnostic params footer -- was hardcoded to "MA {fast}/{slow}" from this
+  // dashboard's MACrossover-only days, which showed "MA null/null" for every other
+  // strategy (Breakout has no fast_period/slow_period at all). results.params has
+  // whatever the actual strategy run used, whatever its param names are.
+  // Drop size/allow_short (shown elsewhere) and any 0/null value -- this project's own
+  // convention for an "off" filter (see strategies/breakout.py's min_volume_ratio etc.),
+  // so the footer reads as "what's actually active" rather than every param that exists.
+  const paramsFoot = Object.entries(results.params || {})
+    .filter(([k, v]) => k !== "size" && k !== "allow_short" && v !== 0 && v !== null)
+    .map(([k, v]) => `${k}=${v}`).join(" ") + (results.allow_short ? " · long+short" : " · long only");
+
   $("#tiles").innerHTML = [
     ["Return", fmtPct(results.return_pct), results.ticker, results.return_pct >= 0 ? "up" : "down"],
     ["Max drawdown", fmtPct(results.max_drawdown_pct), "peak to trough", "down"],
     ["Sharpe", fmtNum(results.sharpe, 3), "annualized", results.sharpe >= 0 ? "up" : "down"],
     ["Win rate", results.win_rate_pct != null ? fmtPct(results.win_rate_pct) : "—", results.won + " won / " + results.lost + " lost", "up"],
-    ["Trades", results.total_trades, `MA ${results.fast_period}/${results.slow_period}` + (results.allow_short ? " · long+short" : " · long only"), "up"],
+    ["Trades", results.total_trades, paramsFoot, "up"],
   ].map(([label, value, foot, tone]) =>
     `<div class="tile"><div class="label">${esc(label)}</div>` +
     `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`

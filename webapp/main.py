@@ -27,6 +27,7 @@ load_dotenv()
 BASE_DIR = pathlib.Path(__file__).parent
 RESULTS_PATH = BASE_DIR / "results.json"
 STATUS_PATH = BASE_DIR / "agent_status.json"  # written by paper_trade_alpaca.py once that's live
+TRADES_PATH = BASE_DIR / "agent_trades.json"  # real fills, appended to by paper_trade_alpaca.py
 
 # Same reasoning as the Hardcore Arctic telemetry dashboard's own require_reader: this is
 # about to go on a public Railway URL, and trading strategy/performance data isn't something
@@ -91,3 +92,12 @@ def status():
     if not STATUS_PATH.exists():
         return {"connected": False}
     return json.loads(STATUS_PATH.read_text())
+
+
+@app.get("/api/live_trades", dependencies=[Depends(require_reader)])
+def live_trades():
+    # Real fills, separate from a backtest's trade_log -- empty rather than 404 before the
+    # agent has ever placed a real order, same "report the honest state" pattern as /api/status.
+    if not TRADES_PATH.exists():
+        return []
+    return json.loads(TRADES_PATH.read_text())

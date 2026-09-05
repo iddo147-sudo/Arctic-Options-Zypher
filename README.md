@@ -6,22 +6,35 @@ rule-based swing strategy, backtested, then run on a **paper** account for long 
 trust it -- real money is explicitly not in scope until it's earned that with real (paper)
 results.
 
+**2026-09-05: Breakout is the validated strategy** (Sharpe 3.188, 61.6% win rate on an
+unseen TEST window -- see `tune_strategy.py`/`validate_trend_cap.py`/
+`validate_entry_filters.py`), confirmed to beat both Momentum (ruled out entirely) and RSI
+(a real but modest edge) after full walk-forward testing. `paper_trade_alpaca.py` runs this
+strategy live now, not the original MACrossover plumbing-check.
+
 ## What's here
 
 - `fetch_data.py` -- pulls historical stock/ETF bars from Yahoo Finance, caches to `data/`.
-- `strategies/ma_crossover.py` -- the starting strategy (SMA crossover, `--allow-short` for
-  long+short). Not expected to be profitable as-is -- it exists to prove the pipeline, not
-  as a real edge.
+- `strategies/` -- four candidate strategies (`ma_crossover.py` the original plumbing
+  check, `momentum.py`, `rsi_reversion.py`, `breakout.py` the validated winner -- see each
+  file's own docstring). `compare_strategies.py` runs all four side by side;
+  `tune_strategy.py` walk-forward tunes one; `analyze_failures.py` +
+  `validate_trend_cap.py`/`validate_entry_filters.py` are the "learn from failure" entry-
+  quality investigation for Breakout specifically.
 - `backtest.py` -- runs a strategy against cached data via `backtrader`, prints return, max
   drawdown, Sharpe, win rate, and writes `webapp/results.json` for the dashboard.
-- `paper_trade_alpaca.py` -- runs the same strategy live against an Alpaca **paper**
-  account. `paper=True` is hardcoded, not a flag -- see its own docstring.
+- `paper_trade_alpaca.py` -- runs the validated Breakout strategy live against an Alpaca
+  **paper** account. `paper=True` is hardcoded, not a flag -- see its own docstring. Meant
+  to be re-run on a schedule (once per trading day after the close), not left running.
 - `paper_trade.py` -- the original IBKR/futures version, kept in case futures come back
   into scope later. Needs IB Gateway running locally; see the git history of this file for
   its own setup steps if you go back to it.
 - `webapp/` -- a local FastAPI dashboard (`webapp/main.py` + `webapp/static/index.html`)
   showing the latest backtest's equity curve, price chart with trade markers, and trade
-  log. Run it with `venv\Scripts\python -m uvicorn webapp.main:app --port 8420` and open
+  log, plus a **Live agent** panel and **Live trades** table once `paper_trade_alpaca.py`
+  has actually run (reads `webapp/agent_status.json` / `agent_trades.json`, both gitignored
+  -- purely local run state). Run it with
+  `venv\Scripts\python -m uvicorn webapp.main:app --port 8420` and open
   http://127.0.0.1:8420 -- re-running `backtest.py` and refreshing (or just waiting, it
   auto-refreshes every 5s) shows the new results.
 
