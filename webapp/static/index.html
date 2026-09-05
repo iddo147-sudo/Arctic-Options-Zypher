@@ -5,42 +5,44 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Futures Bot — Dashboard</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
-/* Same arcade language as the Hardcore Arctic telemetry dashboard -- dark glass surfaces,
-   pixel-notch corners, "Press Start 2P" for short text -- re-themed green/red (profit/loss,
-   long/short) instead of fire/frost since there's no game-UI palette to borrow here. */
+/* FUTURISTIC PASS (2026-09-05, explicit user request -- "less arcady... futuristic as well
+   as the robot"): swapped the pixel-notch/8-bit language for a HUD-panel look -- thin glowing
+   cyan edges, single-diagonal-cut corners instead of stepped pixel corners, "Orbitron" for
+   headers (a geometric sci-fi display face) and "Share Tech Mono" for data/labels (a clean
+   technical monospace, not a retro bitmap one). Green/red stays for profit/loss/long/short --
+   that's meaningful data encoding, not chrome, so it survived the re-theme untouched. */
 :root {
-  --surface-0: #070f18;
-  --surface-1: #0a1420;
-  --surface-2: #101d2c;
+  --surface-0: #060a12;
+  --surface-1: #080e18;
+  --surface-2: #0d1926;
 
-  --line: rgba(233, 244, 251, 0.10);
-  --edge: rgba(233, 244, 251, 0.20);
+  --line: rgba(93, 224, 255, 0.16);
+  --edge: rgba(93, 224, 255, 0.32);
+  --accent: #5de0ff;
+  --accent-dim: rgba(93, 224, 255, 0.5);
 
-  --ink: #eef6fb;
-  --ink-2: #9fb4c7;
-  --ink-3: #647d93;
+  --ink: #eaf6fb;
+  --ink-2: #93b2c4;
+  --ink-3: #5c7d8f;
 
   --up: #2ecc71;
   --up-lift: #6fe3a0;
   --down: #e14b4b;
   --down-lift: #f28a8a;
 
-  --notch: 9px;
-  --notch-sm: 5px;
-  --pixel-font: "Press Start 2P", ui-monospace, "Courier New", monospace;
+  --bevel: 14px;
+  --bevel-sm: 8px;
+  --display-font: "Orbitron", ui-sans-serif, system-ui, sans-serif;
+  --tech-font: "Share Tech Mono", ui-monospace, "Courier New", monospace;
 
+  /* Single diagonal cut on two opposite corners -- the classic sci-fi HUD panel silhouette,
+     as opposed to the previous stepped-pixel corner on all four. */
   --clip-lg: polygon(
-    0 var(--notch), var(--notch) var(--notch), var(--notch) 0,
-    calc(100% - var(--notch)) 0, calc(100% - var(--notch)) var(--notch), 100% var(--notch),
-    100% calc(100% - var(--notch)), calc(100% - var(--notch)) calc(100% - var(--notch)), calc(100% - var(--notch)) 100%,
-    var(--notch) 100%, var(--notch) calc(100% - var(--notch)), 0 calc(100% - var(--notch)));
+    var(--bevel) 0, 100% 0, 100% calc(100% - var(--bevel)), calc(100% - var(--bevel)) 100%, 0 100%, 0 var(--bevel));
   --clip-sm: polygon(
-    0 var(--notch-sm), var(--notch-sm) var(--notch-sm), var(--notch-sm) 0,
-    calc(100% - var(--notch-sm)) 0, calc(100% - var(--notch-sm)) var(--notch-sm), 100% var(--notch-sm),
-    100% calc(100% - var(--notch-sm)), calc(100% - var(--notch-sm)) calc(100% - var(--notch-sm)), calc(100% - var(--notch-sm)) 100%,
-    var(--notch-sm) 100%, var(--notch-sm) calc(100% - var(--notch-sm)), 0 calc(100% - var(--notch-sm)));
+    var(--bevel-sm) 0, 100% 0, 100% calc(100% - var(--bevel-sm)), calc(100% - var(--bevel-sm)) 100%, 0 100%, 0 var(--bevel-sm));
 }
 
 * { box-sizing: border-box; }
@@ -53,71 +55,78 @@ body {
 body::before {
   content: ""; position: fixed; inset: 0; pointer-events: none;
   background:
-    radial-gradient(900px 620px at 12% -8%, rgba(46, 204, 113, 0.14), transparent 62%),
-    radial-gradient(760px 520px at 92% 4%, rgba(225, 75, 75, 0.10), transparent 60%);
+    radial-gradient(900px 620px at 12% -8%, rgba(93, 224, 255, 0.10), transparent 62%),
+    radial-gradient(760px 520px at 92% 4%, rgba(130, 110, 255, 0.08), transparent 60%);
+}
+/* Faint horizontal scanlines across the whole page -- cheap to render, reads as "screen/HUD"
+   rather than "print". Subtle on purpose; this is texture, not a motif. */
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; opacity: 0.5;
+  background: repeating-linear-gradient(0deg, rgba(93,224,255,0.025) 0px, rgba(93,224,255,0.025) 1px, transparent 1px, transparent 3px);
 }
 
 .wrap { position: relative; max-width: 1100px; margin: 0 auto; padding: 40px 24px 72px; }
 
 header { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
 h1 {
-  margin: 0; font-family: var(--pixel-font);
-  font-size: clamp(17px, 3vw, 24px); line-height: 1.4; letter-spacing: 0.01em;
-  background: linear-gradient(96deg, var(--ink) 28%, var(--up-lift));
+  margin: 0; font-family: var(--display-font); font-weight: 700;
+  font-size: clamp(22px, 4vw, 32px); line-height: 1.2; letter-spacing: 0.04em;
+  background: linear-gradient(96deg, var(--ink) 20%, var(--accent));
   -webkit-background-clip: text; background-clip: text; color: transparent;
-  text-shadow: 3px 3px 0 rgba(46, 204, 113, 0.15);
+  filter: drop-shadow(0 0 14px rgba(93, 224, 255, 0.25));
 }
-.sub { margin: 8px 0 0; color: var(--ink-3); font-size: 13.5px; }
+.sub { margin: 8px 0 0; color: var(--ink-3); font-size: 13.5px; font-family: var(--tech-font); }
 .spacer { flex: 1 1 auto; }
 
 .badge {
   display: inline-flex; align-items: center; gap: 9px;
-  padding: 8px 14px 8px 11px;
-  background: rgba(16, 29, 44, 0.72);
-  border: 2px solid var(--line);
+  padding: 9px 16px 9px 12px;
+  background: rgba(13, 25, 38, 0.75);
+  border: 1px solid var(--edge);
   clip-path: var(--clip-sm);
   color: var(--ink-2);
-  font-family: var(--pixel-font);
-  font-size: 9.5px; letter-spacing: 0.02em; line-height: 1;
+  font-family: var(--tech-font);
+  font-size: 11px; letter-spacing: 0.04em; line-height: 1;
+  box-shadow: 0 0 16px -6px var(--accent-dim);
 }
-.dot { width: 8px; height: 8px; background: var(--ink-3); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
 .dot.live { background: var(--up-lift); box-shadow: 0 0 0 0 rgba(111,227,160,.55); animation: pulse 2.4s ease-out infinite; }
 @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(111,227,160,.5)} 70%{box-shadow:0 0 0 9px rgba(111,227,160,0)} 100%{box-shadow:0 0 0 0 rgba(111,227,160,0)} }
 
 .panel {
   position: relative;
-  background: linear-gradient(180deg, var(--surface-2), var(--surface-1) 78%);
-  border: 2px solid var(--line);
+  background: linear-gradient(165deg, var(--surface-2), var(--surface-1) 82%);
+  border: 1px solid var(--line);
   clip-path: var(--clip-lg);
   padding: 24px 26px 28px;
-  box-shadow: inset 0 1px 0 var(--edge), 0 14px 34px -14px rgba(0,0,0,.8);
+  box-shadow: inset 0 1px 0 var(--edge), 0 14px 34px -14px rgba(0,0,0,.8), 0 0 30px -18px var(--accent-dim);
 }
 .panel + .panel { margin-top: 20px; }
 .panel h2 {
-  margin: 0 0 10px; font-family: var(--pixel-font);
-  font-size: 11.5px; font-weight: 400; letter-spacing: 0.02em; text-transform: uppercase;
+  margin: 0 0 10px; font-family: var(--display-font); font-weight: 700;
+  font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
 }
 .panel .hint { margin: 0 0 20px; color: var(--ink-3); font-size: 12.5px; }
 
 .tiles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 20px; }
 .tile {
-  background: linear-gradient(180deg, var(--surface-2), var(--surface-1) 82%);
-  border: 2px solid var(--line);
-  clip-path: var(--clip-lg);
+  background: linear-gradient(165deg, var(--surface-2), var(--surface-1) 85%);
+  border: 1px solid var(--line);
+  clip-path: var(--clip-sm);
   padding: 18px 20px 20px;
   box-shadow: inset 0 1px 0 var(--edge), 0 12px 30px -16px rgba(0,0,0,.85);
 }
-.tile .label { color: var(--ink-3); font-size: 10px; font-family: var(--pixel-font); text-transform: uppercase; letter-spacing: .04em; line-height: 1.6; }
-.tile .value { margin-top: 10px; font-family: var(--pixel-font); font-size: 22px; }
-.tile .value.up { color: var(--up-lift); }
-.tile .value.down { color: var(--down-lift); }
-.tile .foot { margin-top: 6px; color: var(--ink-3); font-size: 12px; }
+.tile .label { color: var(--ink-3); font-size: 10.5px; font-family: var(--tech-font); text-transform: uppercase; letter-spacing: .08em; line-height: 1.6; }
+.tile .value { margin-top: 10px; font-family: var(--display-font); font-weight: 700; font-size: 24px; }
+.tile .value.up { color: var(--up-lift); text-shadow: 0 0 12px rgba(111,227,160,.35); }
+.tile .value.down { color: var(--down-lift); text-shadow: 0 0 12px rgba(242,138,138,.35); }
+.tile .foot { margin-top: 6px; color: var(--ink-3); font-size: 12px; font-family: var(--tech-font); }
 
 canvas { width: 100%; display: block; }
 
-table.data { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 12.5px; }
+table.data { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 12.5px; font-family: var(--tech-font); }
 table.data th, table.data td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
-table.data th { color: var(--ink-3); font-family: var(--pixel-font); font-weight: 400; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .side-buy { color: var(--up-lift); font-weight: 600; }
 .side-sell { color: var(--down-lift); font-weight: 600; }
 
@@ -130,63 +139,70 @@ table.data th { color: var(--ink-3); font-family: var(--pixel-font); font-weight
    driven by /api/status in the JS below: dormant (backtest mode, no live agent),
    idle (connected, holding), working (mid-check), traded (just fired an order --
    a brief celebration before settling back to idle). */
-.mascot { display: flex; align-items: center; gap: 10px; }
+.mascot { display: flex; align-items: center; gap: 12px; }
 .mascot-bot {
   position: relative;
-  width: 34px; height: 34px;
-  animation: botBob 2.4s ease-in-out infinite;
+  width: 38px; height: 46px;
+  animation: botHover 3.2s ease-in-out infinite;
+}
+/* Open targeting-reticle ring hovering above the head, standing in for the old antenna --
+   reads as "scanner", not "TV aerial", which is the whole point of the re-theme. */
+.mascot-ring {
+  position: absolute; top: -12px; left: 9px; width: 18px; height: 18px;
+  border: 2px solid var(--ink-3); border-top-color: transparent; border-radius: 50%;
 }
 .mascot-head {
-  position: absolute; top: 0; left: 5px; width: 24px; height: 16px;
-  background: var(--surface-2); border: 2px solid var(--ink-3);
+  position: absolute; top: 2px; left: 5px; width: 28px; height: 16px;
+  background: var(--surface-2); border: 1px solid var(--ink-3);
+  border-radius: 9px 9px 4px 4px;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
 }
-.mascot-antenna { position: absolute; top: -8px; left: 16px; width: 2px; height: 8px; background: var(--ink-3); }
-.mascot-antenna-tip {
-  position: absolute; top: -12px; left: 14px; width: 6px; height: 6px;
-  background: var(--ink-3); animation: botBlink 1.6s steps(1) infinite;
-}
-.mascot-eye {
-  position: absolute; top: 6px; width: 5px; height: 5px; background: var(--ink-3);
-}
-.mascot-eye.left { left: 9px; }
-.mascot-eye.right { left: 18px; }
+/* One glowing visor strip instead of two square pixel eyes -- a single-sensor "face" is the
+   more recognizably sci-fi-drone read than a blocky two-eyed one. */
+.mascot-visor { width: 18px; height: 4px; border-radius: 2px; background: var(--ink-3); }
 .mascot-body {
-  position: absolute; top: 16px; left: 2px; width: 30px; height: 18px;
-  background: var(--surface-2); border: 2px solid var(--ink-3);
+  position: absolute; top: 18px; left: 3px; width: 32px; height: 24px;
+  background: var(--surface-2); border: 1px solid var(--ink-3);
+  border-radius: 11px;
 }
-.mascot-panel {
-  position: absolute; top: 21px; left: 9px; width: 16px; height: 8px;
-  background: var(--surface-1); border: 1px solid var(--ink-3);
+.mascot-core {
+  position: absolute; top: 8px; left: 13px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--ink-3);
 }
 
-/* Dormant: no live agent -- everything dims, eyes shut (thin horizontal lines), no lights. */
-.mascot-bot.dormant { animation: none; opacity: 0.55; }
-.mascot-bot.dormant .mascot-eye { height: 1px; top: 9px; }
-.mascot-bot.dormant .mascot-antenna-tip { animation: none; background: var(--ink-3); }
+/* Dormant: no live agent -- powered down. Ring and visor go fully dark, no hover/spin. */
+.mascot-bot.dormant { animation: none; opacity: 0.5; }
+.mascot-bot.dormant .mascot-ring { animation: none; }
 
-/* Idle/working/traded: eyes and antenna light up warm-green, matching --up everywhere else. */
-.mascot-bot.idle .mascot-eye, .mascot-bot.working .mascot-eye, .mascot-bot.traded .mascot-eye {
-  background: var(--up-lift); box-shadow: 0 0 4px var(--up-lift);
+/* Idle/working/traded: visor + core + ring light up cyan (the chrome accent), matching this
+   dashboard's own HUD glow rather than the green/red reserved for P&L data. */
+.mascot-bot.idle .mascot-visor, .mascot-bot.working .mascot-visor, .mascot-bot.traded .mascot-visor {
+  background: var(--accent); box-shadow: 0 0 8px var(--accent-dim);
 }
-.mascot-bot.idle .mascot-antenna-tip, .mascot-bot.working .mascot-antenna-tip, .mascot-bot.traded .mascot-antenna-tip {
-  background: var(--up-lift); box-shadow: 0 0 5px var(--up-lift);
+.mascot-bot.idle .mascot-core, .mascot-bot.working .mascot-core, .mascot-bot.traded .mascot-core {
+  background: var(--accent); box-shadow: 0 0 6px var(--accent-dim);
 }
-.mascot-bot.working .mascot-antenna-tip { animation: botBlink 0.4s steps(1) infinite; }
-.mascot-bot.working .mascot-panel { animation: botScan 0.9s ease-in-out infinite; }
+.mascot-bot.idle .mascot-ring, .mascot-bot.working .mascot-ring, .mascot-bot.traded .mascot-ring {
+  border-color: var(--accent-dim); border-top-color: transparent;
+}
+.mascot-bot.working .mascot-ring { animation: botSpin 1.1s linear infinite; }
+.mascot-bot.working .mascot-visor { animation: botScan 1s ease-in-out infinite; }
 .mascot-bot.traded { animation: botBounce 0.6s ease-out 2; }
-.mascot-bot.traded .mascot-eye, .mascot-bot.traded .mascot-antenna-tip {
-  background: var(--up); box-shadow: 0 0 8px var(--up-lift);
+.mascot-bot.traded .mascot-visor, .mascot-bot.traded .mascot-core {
+  background: var(--up-lift); box-shadow: 0 0 12px var(--up-lift);
 }
+.mascot-bot.traded .mascot-ring { border-color: var(--up-lift); border-top-color: transparent; }
 
-@keyframes botBob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
-@keyframes botBlink { 0%, 84% { opacity: 1; } 92% { opacity: 0.15; } 100% { opacity: 1; } }
-@keyframes botScan { 0%, 100% { background: var(--surface-1); } 50% { background: color-mix(in oklab, var(--up) 35%, var(--surface-1)); } }
-@keyframes botBounce { 0%, 100% { transform: translateY(0) scale(1); } 40% { transform: translateY(-7px) scale(1.08); } 60% { transform: translateY(1px) scale(0.97); } }
+@keyframes botHover { 0%, 100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-3px) rotate(-2deg); } }
+@keyframes botSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes botScan { 0%, 100% { box-shadow: 0 0 8px var(--accent-dim); } 50% { box-shadow: 0 0 14px var(--accent); } }
+@keyframes botBounce { 0%, 100% { transform: translateY(0) scale(1); } 40% { transform: translateY(-7px) scale(1.1); } 60% { transform: translateY(1px) scale(0.96); } }
 @media (prefers-reduced-motion: reduce) {
-  .mascot-bot, .mascot-antenna-tip, .mascot-panel { animation: none !important; }
+  .mascot-bot, .mascot-ring, .mascot-visor { animation: none !important; }
 }
 
-.mascot-caption { color: var(--ink-3); font-size: 10.5px; font-family: var(--pixel-font); max-width: 130px; line-height: 1.5; }
+.mascot-caption { color: var(--ink-3); font-size: 11px; font-family: var(--tech-font); max-width: 150px; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -200,14 +216,12 @@ table.data th { color: var(--ink-3); font-family: var(--pixel-font); font-weight
     <div class="mascot">
       <span class="mascot-caption" id="mascotCaption">waiting for status…</span>
       <div class="mascot-bot dormant" id="mascotBot">
-        <div class="mascot-antenna"></div>
-        <div class="mascot-antenna-tip"></div>
+        <div class="mascot-ring"></div>
         <div class="mascot-head">
-          <div class="mascot-eye left"></div>
-          <div class="mascot-eye right"></div>
+          <div class="mascot-visor"></div>
         </div>
         <div class="mascot-body">
-          <div class="mascot-panel"></div>
+          <div class="mascot-core"></div>
         </div>
       </div>
     </div>
