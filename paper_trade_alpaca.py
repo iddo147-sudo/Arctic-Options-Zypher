@@ -1,15 +1,19 @@
 """
-Runs the validated Breakout strategy live against Alpaca's PAPER trading account -- the
-strategy compare_strategies.py/tune_strategy.py's walk-forward testing actually confirmed
-(Sharpe 3.188, 61.6% win rate on unseen data), not the original MACrossover plumbing-check
-version this file used before 2026-09-05.
+Runs the validated Breakout strategy live against Alpaca's PAPER trading account, across
+the SAME 8-ticker set tune_strategy.py/compare_strategies.py validated it on (Sharpe 3.188,
+61.6% win rate on unseen data) -- not the original single-symbol MACrossover version this
+file used before 2026-09-05, and not just SPY alone (2026-09-05 later same day: watching one
+ticker means one shot at a signal per day; the strategy was never validated as "trade SPY
+specifically", it was validated across all 8).
 
 Meant to be re-run on a schedule (cron/Task Scheduler), once per trading day after the
 close -- NOT left running as a daemon at this stage, same design choice as the original
 version. Each run is a fresh process, so exit logic (stop-loss/target/max_hold) needs
 position state to survive between runs: Alpaca's own position record is the source of truth
-for entry price (avg_entry_price) and quantity, but Alpaca doesn't track WHEN a position was
-opened, so entry date alone is persisted locally in agent_position_state.json.
+for entry price (avg_entry_price) and quantity per symbol, but Alpaca doesn't track WHEN a
+position was opened, so entry date per symbol is persisted locally in
+agent_position_state.json (one small dict, keyed by symbol -- NOT one file per symbol, so a
+single read/write covers the whole run).
 
 SETUP: see README.md's Paper trading section for getting a free Alpaca paper key pair.
 SAFETY: `paper=True` is hardcoded below, not a flag -- this script has no code path that can
@@ -36,10 +40,14 @@ from strategies.breakout import Breakout
 
 load_dotenv()  # picks up .env for local runs -- setx env vars (if already set) still win, same as webapp/main.py's own load_dotenv() call
 
+# Same default ticker set as tune_strategy.py/compare_strategies.py -- this IS what got
+# validated, not any one of these individually.
+DEFAULT_SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "TSLA", "JPM", "XOM", "IWM"]
+
 WEBAPP_DIR = pathlib.Path(__file__).parent / "webapp"
 STATUS_PATH = WEBAPP_DIR / "agent_status.json"
 TRADES_PATH = WEBAPP_DIR / "agent_trades.json"
-# Just the entry date -- everything else about an open position (qty, avg fill price) is
+# {symbol: entry_date} -- everything else about an open position (qty, avg fill price) is
 # read straight from Alpaca each run rather than duplicated here, so this file can never
 # drift out of sync with what the broker actually thinks we hold.
 POSITION_STATE_PATH = WEBAPP_DIR / "agent_position_state.json"
@@ -65,33 +73,18 @@ def _report(path: str, payload: dict):
     try:
         urllib.request.urlopen(req, timeout=10)
     except urllib.error.URLError as e:
-        # Never let a dashboard-reporting hiccup fail the actual trading run -- the order
-        # already went through Alpaca (or didn't) by the time this fires either way.
+        # Never let a dashboard-reporting hiccup fail the actual trading run -- whatever
+        # orders were going to fire already fired (or didn't) by the time this runs.
         print(f"[warn] failed to report to dashboard at {DASHBOARD_URL}: {e}")
 
 
-def write_status(**fields):
-    """Lets the dashboard's 'agent connected' badge mean something real -- see
-    webapp/main.py's own /api/status, which just reports connected=false until this file
-    (or a report_status push) exists."""
-    payload = {
-        "connected": True,
-        "account_type": "paper",
-        "strategy": "breakout",
-        "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
-    }
-    payload.update(fields)
-    STATUS_PATH.parent.mkdir(exist_ok=True)
-    STATUS_PATH.write_text(json.dumps(payload, indent=2))
-    _report("/api/report_status", payload)
-
-
-def log_live_trade(side, price, size, reason):
+def log_live_trade(symbol, side, price, size, reason):
     """Appends one real fill to agent_trades.json -- the dashboard's 'Live trades' panel,
     kept entirely separate from a backtest's trade_log so the two are never confused for
-    each other."""
+    each other. Includes symbol now that more than one ticker can trade in the same run."""
     trade = {
         "date": datetime.date.today().isoformat(),
+        "symbol": symbol,
         "side": side,
         "price": round(price, 2),
         "size": size,
@@ -103,19 +96,10 @@ def log_live_trade(side, price, size, reason):
     _report("/api/report_trade", trade)
 
 
-def load_entry_date():
+def load_entry_dates() -> dict:
     if POSITION_STATE_PATH.exists():
-        return json.loads(POSITION_STATE_PATH.read_text()).get("entry_date")
-    return None
-
-
-def save_entry_date(entry_date: str):
-    POSITION_STATE_PATH.write_text(json.dumps({"entry_date": entry_date}))
-
-
-def clear_entry_date():
-    if POSITION_STATE_PATH.exists():
-        POSITION_STATE_PATH.unlink()
+        return json.loads(POSITION_STATE_PATH.read_text())
+    return {}
 
 
 def get_clients() -> tuple[TradingClient, StockHistoricalDataClient]:
@@ -131,14 +115,12 @@ def get_clients() -> tuple[TradingClient, StockHistoricalDataClient]:
     return trading, data
 
 
-def run(symbol: str, shares: int):
-    trading, data_client = get_clients()
+def check_symbol(trading, data_client, symbol: str, shares: int, entry_dates: dict) -> dict:
+    """Runs the strategy's entry/exit check for ONE symbol and returns its status dict.
+    Mutates entry_dates in place (add/remove this symbol's key) -- the caller persists the
+    whole dict once after all symbols are checked, not per-symbol, so one run only ever
+    does one disk write for this file regardless of how many tickers it watches."""
     p = Breakout.params
-
-    account = trading.get_account()
-    buying_power = round(float(account.buying_power), 2)
-    print(f"Connected to Alpaca paper account -- buying power ${buying_power:,.2f}")
-
     lookback_days = max(p.trend_period, p.breakout_period) * 2  # generous buffer for weekends/holidays
     bars_request = StockBarsRequest(
         symbol_or_symbols=symbol,
@@ -147,7 +129,7 @@ def run(symbol: str, shares: int):
     )
     bars = data_client.get_stock_bars(bars_request).df
     if bars is None or len(bars) < p.trend_period + 1:
-        raise SystemExit(f"Not enough historical bars returned to compute the {p.trend_period}-day trend yet.")
+        return {"error": f"not enough bars to compute the {p.trend_period}-day trend yet"}
 
     closes = bars["close"]
     today_close = float(closes.iloc[-1])
@@ -168,31 +150,27 @@ def run(symbol: str, shares: int):
           f"trend_ma={trend_ma:.2f} highest={highest:.2f} position={current_qty}")
 
     if current_qty == 0:
-        clear_entry_date()  # flat -- any stale entry_date from a prior run no longer applies
+        entry_dates.pop(symbol, None)  # flat -- any stale entry_date no longer applies
         in_uptrend = today_close > trend_ma
         broke_out = today_close > highest
         if not (in_uptrend and broke_out):
             reason = "no breakout" if not broke_out else "below trend"
-            print(f"No entry -- {reason}. Holding flat.")
-            write_status(symbol=symbol, position=0, close=round(today_close, 2),
-                         trend_ma=round(trend_ma, 2), highest=round(highest, 2),
-                         last_action=f"holding flat ({reason})", buying_power=buying_power)
-            return
+            print(f"{symbol}: no entry -- {reason}. Holding flat.")
+            return {"position": 0, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
+                    "highest": round(highest, 2), "last_action": f"holding flat ({reason})"}
 
         order = MarketOrderRequest(symbol=symbol, qty=shares, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
         submitted = trading.submit_order(order)
-        save_entry_date(datetime.date.today().isoformat())
-        log_live_trade("BUY", today_close, shares, "trend breakout")
+        entry_dates[symbol] = datetime.date.today().isoformat()
+        log_live_trade(symbol, "BUY", today_close, shares, "trend breakout")
         print(f"Submitted BUY {shares} {symbol} -- order id {submitted.id}")
-        write_status(symbol=symbol, position=shares, close=round(today_close, 2),
-                     trend_ma=round(trend_ma, 2), highest=round(highest, 2),
-                     last_action=f"BUY {shares} {symbol}", last_order_id=str(submitted.id),
-                     buying_power=buying_power)
-        return
+        return {"position": shares, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
+                "highest": round(highest, 2), "last_action": f"BUY {shares} {symbol}",
+                "last_order_id": str(submitted.id)}
 
     # In a position -- check exits. avg_entry_price comes straight from Alpaca (the real
     # fill price), not something this script tracked itself.
-    entry_date_str = load_entry_date()
+    entry_date_str = entry_dates.get(symbol)
     bars_held = (datetime.date.today() - datetime.date.fromisoformat(entry_date_str)).days if entry_date_str else None
 
     stopped_out = today_close <= avg_entry_price * (1 - p.stop_pct)
@@ -200,27 +178,63 @@ def run(symbol: str, shares: int):
     timed_out = bars_held is not None and bars_held >= p.max_hold_days
 
     if not (stopped_out or hit_target or timed_out):
-        print(f"Holding {current_qty} {symbol} @ entry {avg_entry_price:.2f} -- no exit condition met.")
-        write_status(symbol=symbol, position=current_qty, close=round(today_close, 2),
-                     entry_price=round(avg_entry_price, 2), last_action="holding position",
-                     buying_power=buying_power)
-        return
+        print(f"{symbol}: holding {current_qty} @ entry {avg_entry_price:.2f} -- no exit condition met.")
+        return {"position": current_qty, "close": round(today_close, 2),
+                "entry_price": round(avg_entry_price, 2), "last_action": "holding position"}
 
     reason = "stop-loss" if stopped_out else "profit target" if hit_target else "max hold days"
     order = MarketOrderRequest(symbol=symbol, qty=abs(current_qty), side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
     submitted = trading.submit_order(order)
-    clear_entry_date()
-    log_live_trade("SELL", today_close, abs(current_qty), reason)
+    entry_dates.pop(symbol, None)
+    log_live_trade(symbol, "SELL", today_close, abs(current_qty), reason)
     print(f"Submitted SELL {abs(current_qty)} {symbol} -- order id {submitted.id} ({reason})")
-    write_status(symbol=symbol, position=0, close=round(today_close, 2),
-                 last_action=f"SELL {abs(current_qty)} {symbol} ({reason})", last_order_id=str(submitted.id),
-                 buying_power=buying_power)
+    return {"position": 0, "close": round(today_close, 2),
+            "last_action": f"SELL {abs(current_qty)} {symbol} ({reason})", "last_order_id": str(submitted.id)}
+
+
+def run(symbols: list[str], shares: int):
+    trading, data_client = get_clients()
+
+    account = trading.get_account()
+    buying_power = round(float(account.buying_power), 2)
+    print(f"Connected to Alpaca paper account -- buying power ${buying_power:,.2f}")
+
+    entry_dates = load_entry_dates()
+    tickers = {}
+    fired = []  # (symbol, action_text, order_id) for whichever symbols actually traded this run
+    for symbol in symbols:
+        try:
+            tickers[symbol] = check_symbol(trading, data_client, symbol, shares, entry_dates)
+        except Exception as e:
+            print(f"[warn] {symbol} check failed: {e}")
+            tickers[symbol] = {"error": str(e)}
+            continue
+        if tickers[symbol].get("last_order_id"):
+            fired.append((symbol, tickers[symbol]["last_action"], tickers[symbol]["last_order_id"]))
+
+    POSITION_STATE_PATH.write_text(json.dumps(entry_dates, indent=2))
+
+    summary = "; ".join(text for _, text, _ in fired) if fired else f"checked {len(symbols)} tickers -- no setups"
+    payload = {
+        "connected": True,
+        "account_type": "paper",
+        "strategy": "breakout",
+        "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "buying_power": buying_power,
+        "last_action": summary,
+        "last_order_id": fired[-1][2] if fired else None,
+        "tickers": tickers,
+    }
+    STATUS_PATH.parent.mkdir(exist_ok=True)
+    STATUS_PATH.write_text(json.dumps(payload, indent=2))
+    _report("/api/report_status", payload)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--symbol", default="SPY", help="Stock ticker to trade -- any of the 8 validated in tune_strategy.py's default set")
-    parser.add_argument("--shares", type=int, default=Breakout.params.size, help="Flat share count per trade")
+    parser.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS,
+                         help=f"Tickers to watch (default: the 8 validated ones -- {' '.join(DEFAULT_SYMBOLS)})")
+    parser.add_argument("--shares", type=int, default=Breakout.params.size, help="Flat share count per trade, per symbol")
     args = parser.parse_args()
 
-    run(args.symbol, args.shares)
+    run(args.symbols, args.shares)

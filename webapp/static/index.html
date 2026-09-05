@@ -232,8 +232,9 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
 
   <section class="panel" id="agentPanel" style="display:none">
     <h2>Live agent</h2>
-    <p class="hint">Written by paper_trade_alpaca.py the last time it ran -- this only exists once that script has actually run against your Alpaca paper account.</p>
+    <p class="hint">Written by paper_trade_alpaca.py the last time it ran -- this only exists once that script has actually run against your Alpaca paper account. Watches every ticker the strategy was actually validated on, not just one.</p>
     <div class="tiles" id="agentTiles"></div>
+    <div id="agentTickersWrap" style="margin-top:16px"></div>
   </section>
 
   <section class="panel" id="liveTradesPanel" style="display:none">
@@ -349,13 +350,8 @@ function updateMascot(status) {
     return;
   }
 
-  if (status.last_action === "checking") {
-    bot.classList.add("working");
-    caption.textContent = "checking " + (status.symbol || "the market") + "…";
-  } else {
-    bot.classList.add("idle");
-    caption.textContent = status.last_action || "watching, holding position";
-  }
+  bot.classList.add("idle");
+  caption.textContent = status.last_action || "watching, holding position";
 }
 
 async function load() {
@@ -379,10 +375,10 @@ async function load() {
     text.textContent = "agent connected — " + (status.account_type || "paper");
     agentPanel.style.display = "";
     liveTradesPanel.style.display = "";
+    // Account-level tiles -- one agent run now watches several tickers, not one, so
+    // per-symbol detail (position, close, trend) moved to the table below instead of tiles.
     $("#agentTiles").innerHTML = [
-      ["Symbol", status.symbol || "—", status.updated_at ? "as of " + new Date(status.updated_at).toLocaleString() : "", "up"],
-      ["Position", status.position != null ? status.position : "—", "shares (breakout is long-only)", status.position > 0 ? "up" : "up"],
-      ["Close / trend SMA", (status.close != null ? fmtNum(status.close) : "—") + " / " + (status.trend_ma != null ? fmtNum(status.trend_ma) : "—"), status.highest != null ? "breakout level " + fmtNum(status.highest) : (status.entry_price != null ? "entry " + fmtNum(status.entry_price) : ""), "up"],
+      ["Strategy", status.strategy || "—", status.updated_at ? "as of " + new Date(status.updated_at).toLocaleString() : "", "up"],
       ["Last action", status.last_action || "—", status.last_order_id ? "order " + status.last_order_id.slice(0, 8) : "", "up"],
       ["Buying power", status.buying_power != null ? "$" + Number(status.buying_power).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", "paper account", "up"],
     ].map(([label, value, foot, tone]) =>
@@ -390,11 +386,26 @@ async function load() {
       `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
     ).join("");
 
+    // One row per watched ticker -- status.tickers is {SYMBOL: {position, close, trend_ma,
+    // highest|entry_price, last_action, ...}}, written by the current multi-symbol
+    // paper_trade_alpaca.py. Falls back to nothing gracefully if it's ever missing/empty.
+    const tickerEntries = Object.entries(status.tickers || {});
+    $("#agentTickersWrap").innerHTML = !tickerEntries.length
+      ? `<div class="empty">No ticker data yet.</div>`
+      : "<table class=\"data\"><thead><tr><th>Symbol</th><th>Position</th><th>Close</th><th>Trend SMA</th><th>Level</th><th>Last action</th></tr></thead><tbody>" +
+        tickerEntries.map(([sym, t]) => `<tr><td>${esc(sym)}</td>` +
+          `<td>${t.position != null ? t.position : "—"}</td>` +
+          `<td>${t.close != null ? fmtNum(t.close) : "—"}</td>` +
+          `<td>${t.trend_ma != null ? fmtNum(t.trend_ma) : "—"}</td>` +
+          `<td>${t.entry_price != null ? "entry " + fmtNum(t.entry_price) : (t.highest != null ? "brk " + fmtNum(t.highest) : "—")}</td>` +
+          `<td>${esc(t.error ? "error: " + t.error : (t.last_action || "—"))}</td></tr>`).join("") +
+        "</tbody></table>";
+
     const liveRows = (liveTrades || []).slice().reverse();
     $("#liveTradeTableWrap").innerHTML = !liveRows.length
       ? `<div class="empty">No live trades yet.</div>`
-      : "<table class=\"data\"><thead><tr><th>Date</th><th>Side</th><th>Price</th><th>Size</th><th>Reason</th></tr></thead><tbody>" +
-        liveRows.map((t) => `<tr><td>${esc(t.date)}</td><td class="side-${t.side.toLowerCase()}">${esc(t.side)}</td>` +
+      : "<table class=\"data\"><thead><tr><th>Date</th><th>Symbol</th><th>Side</th><th>Price</th><th>Size</th><th>Reason</th></tr></thead><tbody>" +
+        liveRows.map((t) => `<tr><td>${esc(t.date)}</td><td>${esc(t.symbol || "—")}</td><td class="side-${t.side.toLowerCase()}">${esc(t.side)}</td>` +
           `<td>${fmtNum(t.price)}</td><td>${esc(t.size)}</td><td>${esc(t.reason || "")}</td></tr>`).join("") +
         "</tbody></table>";
   } else {
