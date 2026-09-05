@@ -22,6 +22,7 @@ import json
 import pathlib
 import os
 
+from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -30,6 +31,8 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from strategies.breakout import Breakout
+
+load_dotenv()  # picks up .env for local runs -- setx env vars (if already set) still win, same as webapp/main.py's own load_dotenv() call
 
 WEBAPP_DIR = pathlib.Path(__file__).parent / "webapp"
 STATUS_PATH = WEBAPP_DIR / "agent_status.json"
@@ -103,7 +106,8 @@ def run(symbol: str, shares: int):
     p = Breakout.params
 
     account = trading.get_account()
-    print(f"Connected to Alpaca paper account -- buying power ${float(account.buying_power):,.2f}")
+    buying_power = round(float(account.buying_power), 2)
+    print(f"Connected to Alpaca paper account -- buying power ${buying_power:,.2f}")
 
     lookback_days = max(p.trend_period, p.breakout_period) * 2  # generous buffer for weekends/holidays
     bars_request = StockBarsRequest(
@@ -142,7 +146,7 @@ def run(symbol: str, shares: int):
             print(f"No entry -- {reason}. Holding flat.")
             write_status(symbol=symbol, position=0, close=round(today_close, 2),
                          trend_ma=round(trend_ma, 2), highest=round(highest, 2),
-                         last_action=f"holding flat ({reason})")
+                         last_action=f"holding flat ({reason})", buying_power=buying_power)
             return
 
         order = MarketOrderRequest(symbol=symbol, qty=shares, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
@@ -152,7 +156,8 @@ def run(symbol: str, shares: int):
         print(f"Submitted BUY {shares} {symbol} -- order id {submitted.id}")
         write_status(symbol=symbol, position=shares, close=round(today_close, 2),
                      trend_ma=round(trend_ma, 2), highest=round(highest, 2),
-                     last_action=f"BUY {shares} {symbol}", last_order_id=str(submitted.id))
+                     last_action=f"BUY {shares} {symbol}", last_order_id=str(submitted.id),
+                     buying_power=buying_power)
         return
 
     # In a position -- check exits. avg_entry_price comes straight from Alpaca (the real
@@ -167,7 +172,8 @@ def run(symbol: str, shares: int):
     if not (stopped_out or hit_target or timed_out):
         print(f"Holding {current_qty} {symbol} @ entry {avg_entry_price:.2f} -- no exit condition met.")
         write_status(symbol=symbol, position=current_qty, close=round(today_close, 2),
-                     entry_price=round(avg_entry_price, 2), last_action="holding position")
+                     entry_price=round(avg_entry_price, 2), last_action="holding position",
+                     buying_power=buying_power)
         return
 
     reason = "stop-loss" if stopped_out else "profit target" if hit_target else "max hold days"
@@ -177,7 +183,8 @@ def run(symbol: str, shares: int):
     log_live_trade("SELL", today_close, abs(current_qty), reason)
     print(f"Submitted SELL {abs(current_qty)} {symbol} -- order id {submitted.id} ({reason})")
     write_status(symbol=symbol, position=0, close=round(today_close, 2),
-                 last_action=f"SELL {abs(current_qty)} {symbol} ({reason})", last_order_id=str(submitted.id))
+                 last_action=f"SELL {abs(current_qty)} {symbol} ({reason})", last_order_id=str(submitted.id),
+                 buying_power=buying_power)
 
 
 if __name__ == "__main__":
