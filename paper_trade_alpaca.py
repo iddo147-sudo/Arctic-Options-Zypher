@@ -40,9 +40,20 @@ from strategies.breakout import Breakout
 
 load_dotenv()  # picks up .env for local runs -- setx env vars (if already set) still win, same as webapp/main.py's own load_dotenv() call
 
-# Same default ticker set as tune_strategy.py/compare_strategies.py -- this IS what got
-# validated, not any one of these individually.
-DEFAULT_SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "TSLA", "JPM", "XOM", "IWM"]
+# The original 8 = tune_strategy.py/compare_strategies.py's default set, the one the
+# strategy's PARAMS were actually grid-searched and validated against.
+#
+# The second 8 (2026-09-05 evening, "do the wider universe") = expand_universe.py's result:
+# ran the SAME fixed, already-validated defaults (not re-tuned per ticker -- that would be
+# overfitting one at a time) across 23 new sector-diverse candidates, kept only the ones
+# with POSITIVE Sharpe on BOTH the TRAIN and TEST windows. 15 of 23 candidates failed that
+# bar and are deliberately left out (e.g. NVDA, GOOGL, V, MA, JNJ, INTC, F, PYPL) -- this is
+# not "watch everything for more trades", it's "watch more names the existing rules actually
+# held up on." See expand_universe.py to re-run this check or test a different candidate list.
+DEFAULT_SYMBOLS = [
+    "SPY", "QQQ", "AAPL", "MSFT", "TSLA", "JPM", "XOM", "IWM",
+    "AMZN", "META", "NFLX", "AMD", "BAC", "HD", "COST", "CAT",
+]
 
 WEBAPP_DIR = pathlib.Path(__file__).parent / "webapp"
 STATUS_PATH = WEBAPP_DIR / "agent_status.json"
