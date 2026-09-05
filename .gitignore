@@ -1,0 +1,7 @@
+venv/
+data/*.csv
+logs/
+__pycache__/
+*.pyc
+.env
+webapp/agent_status.json

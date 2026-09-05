@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Futures Bot — Dashboard</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+/* Same arcade language as the Hardcore Arctic telemetry dashboard -- dark glass surfaces,
+   pixel-notch corners, "Press Start 2P" for short text -- re-themed green/red (profit/loss,
+   long/short) instead of fire/frost since there's no game-UI palette to borrow here. */
+:root {
+  --surface-0: #070f18;
+  --surface-1: #0a1420;
+  --surface-2: #101d2c;
+
+  --line: rgba(233, 244, 251, 0.10);
+  --edge: rgba(233, 244, 251, 0.20);
+
+  --ink: #eef6fb;
+  --ink-2: #9fb4c7;
+  --ink-3: #647d93;
+
+  --up: #2ecc71;
+  --up-lift: #6fe3a0;
+  --down: #e14b4b;
+  --down-lift: #f28a8a;
+
+  --notch: 9px;
+  --notch-sm: 5px;
+  --pixel-font: "Press Start 2P", ui-monospace, "Courier New", monospace;
+
+  --clip-lg: polygon(
+    0 var(--notch), var(--notch) var(--notch), var(--notch) 0,
+    calc(100% - var(--notch)) 0, calc(100% - var(--notch)) var(--notch), 100% var(--notch),
+    100% calc(100% - var(--notch)), calc(100% - var(--notch)) calc(100% - var(--notch)), calc(100% - var(--notch)) 100%,
+    var(--notch) 100%, var(--notch) calc(100% - var(--notch)), 0 calc(100% - var(--notch)));
+  --clip-sm: polygon(
+    0 var(--notch-sm), var(--notch-sm) var(--notch-sm), var(--notch-sm) 0,
+    calc(100% - var(--notch-sm)) 0, calc(100% - var(--notch-sm)) var(--notch-sm), 100% var(--notch-sm),
+    100% calc(100% - var(--notch-sm)), calc(100% - var(--notch-sm)) calc(100% - var(--notch-sm)), calc(100% - var(--notch-sm)) 100%,
+    var(--notch-sm) 100%, var(--notch-sm) calc(100% - var(--notch-sm)), 0 calc(100% - var(--notch-sm)));
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh;
+  background: var(--surface-1); color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(900px 620px at 12% -8%, rgba(46, 204, 113, 0.14), transparent 62%),
+    radial-gradient(760px 520px at 92% 4%, rgba(225, 75, 75, 0.10), transparent 60%);
+}
+
+.wrap { position: relative; max-width: 1100px; margin: 0 auto; padding: 40px 24px 72px; }
+
+header { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
+h1 {
+  margin: 0; font-family: var(--pixel-font);
+  font-size: clamp(17px, 3vw, 24px); line-height: 1.4; letter-spacing: 0.01em;
+  background: linear-gradient(96deg, var(--ink) 28%, var(--up-lift));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  text-shadow: 3px 3px 0 rgba(46, 204, 113, 0.15);
+}
+.sub { margin: 8px 0 0; color: var(--ink-3); font-size: 13.5px; }
+.spacer { flex: 1 1 auto; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 8px 14px 8px 11px;
+  background: rgba(16, 29, 44, 0.72);
+  border: 2px solid var(--line);
+  clip-path: var(--clip-sm);
+  color: var(--ink-2);
+  font-family: var(--pixel-font);
+  font-size: 9.5px; letter-spacing: 0.02em; line-height: 1;
+}
+.dot { width: 8px; height: 8px; background: var(--ink-3); }
+.dot.live { background: var(--up-lift); box-shadow: 0 0 0 0 rgba(111,227,160,.55); animation: pulse 2.4s ease-out infinite; }
+@keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(111,227,160,.5)} 70%{box-shadow:0 0 0 9px rgba(111,227,160,0)} 100%{box-shadow:0 0 0 0 rgba(111,227,160,0)} }
+
+.panel {
+  position: relative;
+  background: linear-gradient(180deg, var(--surface-2), var(--surface-1) 78%);
+  border: 2px solid var(--line);
+  clip-path: var(--clip-lg);
+  padding: 24px 26px 28px;
+  box-shadow: inset 0 1px 0 var(--edge), 0 14px 34px -14px rgba(0,0,0,.8);
+}
+.panel + .panel { margin-top: 20px; }
+.panel h2 {
+  margin: 0 0 10px; font-family: var(--pixel-font);
+  font-size: 11.5px; font-weight: 400; letter-spacing: 0.02em; text-transform: uppercase;
+}
+.panel .hint { margin: 0 0 20px; color: var(--ink-3); font-size: 12.5px; }
+
+.tiles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 20px; }
+.tile {
+  background: linear-gradient(180deg, var(--surface-2), var(--surface-1) 82%);
+  border: 2px solid var(--line);
+  clip-path: var(--clip-lg);
+  padding: 18px 20px 20px;
+  box-shadow: inset 0 1px 0 var(--edge), 0 12px 30px -16px rgba(0,0,0,.85);
+}
+.tile .label { color: var(--ink-3); font-size: 10px; font-family: var(--pixel-font); text-transform: uppercase; letter-spacing: .04em; line-height: 1.6; }
+.tile .value { margin-top: 10px; font-family: var(--pixel-font); font-size: 22px; }
+.tile .value.up { color: var(--up-lift); }
+.tile .value.down { color: var(--down-lift); }
+.tile .foot { margin-top: 6px; color: var(--ink-3); font-size: 12px; }
+
+canvas { width: 100%; display: block; }
+
+table.data { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 12.5px; }
+table.data th, table.data td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
+table.data th { color: var(--ink-3); font-family: var(--pixel-font); font-weight: 400; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.side-buy { color: var(--up-lift); font-weight: 600; }
+.side-sell { color: var(--down-lift); font-weight: 600; }
+
+.empty { padding: 34px 4px; text-align: center; color: var(--ink-3); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Swing Bot</h1>
+      <p class="sub">MA crossover, stocks/ETFs — paper only until proven.</p>
+    </div>
+    <div class="spacer"></div>
+    <span class="badge"><span class="dot" id="agentDot"></span><span id="agentText">checking…</span></span>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="panel" id="agentPanel" style="display:none">
+    <h2>Live agent</h2>
+    <p class="hint">Written by paper_trade_alpaca.py the last time it ran -- this only exists once that script has actually run against your Alpaca paper account.</p>
+    <div class="tiles" id="agentTiles"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Equity curve</h2>
+    <p class="hint">Portfolio value over the backtest window. Flat stretches are the strategy sitting out; the point of this project is not trusting the slope until it's proven against unseen data.</p>
+    <canvas id="equityChart" height="220"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>Price &amp; trades</h2>
+    <p class="hint">Green up = buy, red down = sell. A cluster of flips right at a turn means the strategy is whipsawing, not predicting.</p>
+    <canvas id="priceChart" height="220"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>Trade log</h2>
+    <div id="tradeTableWrap"><div class="empty">Loading…</div></div>
+  </section>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const fmtPct = (v) => (v == null ? "—" : v.toFixed(2) + "%");
+const fmtNum = (v, d=2) => (v == null ? "—" : v.toFixed(d));
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+
+function drawLineChart(canvas, points, valueKey, opts = {}) {
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight || 220;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  if (!points || !points.length) {
+    ctx.fillStyle = "#647d93"; ctx.font = "13px sans-serif";
+    ctx.fillText("No data yet — run backtest.py", 12, h / 2);
+    return;
+  }
+
+  const values = points.map((p) => p[valueKey]);
+  const min = Math.min(...values), max = Math.max(...values);
+  const pad = (max - min) * 0.08 || 1;
+  const yMin = min - pad, yMax = max + pad;
+  const xStep = w / Math.max(1, points.length - 1);
+  const yOf = (v) => h - ((v - yMin) / (yMax - yMin)) * h;
+
+  // Filled area under the line for a bit of visual weight, same "glow" feel as the game
+  // dashboard's bars rather than a bare stroke.
+  ctx.beginPath();
+  ctx.moveTo(0, h);
+  points.forEach((p, i) => ctx.lineTo(i * xStep, yOf(p[valueKey])));
+  ctx.lineTo(w, h);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, opts.fill || "rgba(46,204,113,0.18)");
+  grad.addColorStop(1, "rgba(46,204,113,0.0)");
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const x = i * xStep, y = yOf(p[valueKey]);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = opts.stroke || "#6fe3a0";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  if (opts.markers) {
+    for (const m of opts.markers) {
+      const idx = points.findIndex((p) => p.date === m.date);
+      if (idx < 0) continue;
+      const x = idx * xStep, y = yOf(points[idx][valueKey]);
+      ctx.beginPath();
+      ctx.fillStyle = m.side === "BUY" ? "#2ecc71" : "#e14b4b";
+      if (m.side === "BUY") {
+        ctx.moveTo(x, y - 7); ctx.lineTo(x - 5, y + 3); ctx.lineTo(x + 5, y + 3);
+      } else {
+        ctx.moveTo(x, y + 7); ctx.lineTo(x - 5, y - 3); ctx.lineTo(x + 5, y - 3);
+      }
+      ctx.closePath(); ctx.fill();
+    }
+  }
+}
+
+async function load() {
+  let results, status;
+  try {
+    [results, status] = await Promise.all([
+      fetch("/api/results").then((r) => r.json()),
+      fetch("/api/status").then((r) => r.json()),
+    ]);
+  } catch (e) {
+    $("#agentText").textContent = "dashboard API unreachable";
+    return;
+  }
+
+  const dot = $("#agentDot"), text = $("#agentText");
+  const agentPanel = $("#agentPanel");
+  if (status.connected) {
+    dot.classList.add("live");
+    text.textContent = "agent connected — " + (status.account_type || "paper");
+    agentPanel.style.display = "";
+    $("#agentTiles").innerHTML = [
+      ["Symbol", status.symbol || "—", status.updated_at ? "as of " + new Date(status.updated_at).toLocaleString() : "", "up"],
+      ["Position", status.position != null ? status.position : "—", "shares (negative = short)", status.position > 0 ? "up" : status.position < 0 ? "down" : "up"],
+      ["Fast / slow MA", (status.fast != null ? fmtNum(status.fast) : "—") + " / " + (status.slow != null ? fmtNum(status.slow) : "—"), "", "up"],
+      ["Last action", status.last_action || "—", status.last_order_id ? "order " + status.last_order_id.slice(0, 8) : "", "up"],
+      ["Buying power", status.buying_power != null ? "$" + Number(status.buying_power).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", "paper account", "up"],
+    ].map(([label, value, foot, tone]) =>
+      `<div class="tile"><div class="label">${esc(label)}</div>` +
+      `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
+    ).join("");
+  } else {
+    dot.classList.remove("live");
+    text.textContent = "no live agent — backtest mode";
+    agentPanel.style.display = "none";
+  }
+
+  if (results.available === false) {
+    $("#tiles").innerHTML = `<div class="empty">${esc(results.reason)}</div>`;
+    $("#tradeTableWrap").innerHTML = "";
+    return;
+  }
+
+  $("#tiles").innerHTML = [
+    ["Return", fmtPct(results.return_pct), results.ticker, results.return_pct >= 0 ? "up" : "down"],
+    ["Max drawdown", fmtPct(results.max_drawdown_pct), "peak to trough", "down"],
+    ["Sharpe", fmtNum(results.sharpe, 3), "annualized", results.sharpe >= 0 ? "up" : "down"],
+    ["Win rate", results.win_rate_pct != null ? fmtPct(results.win_rate_pct) : "—", results.won + " won / " + results.lost + " lost", "up"],
+    ["Trades", results.total_trades, `MA ${results.fast_period}/${results.slow_period}` + (results.allow_short ? " · long+short" : " · long only"), "up"],
+  ].map(([label, value, foot, tone]) =>
+    `<div class="tile"><div class="label">${esc(label)}</div>` +
+    `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
+  ).join("");
+
+  drawLineChart($("#equityChart"), results.equity_curve, "value", { stroke: "#6fe3a0", fill: "rgba(46,204,113,0.18)" });
+  drawLineChart($("#priceChart"), results.price_series, "close", {
+    stroke: "#9fb4c7", fill: "rgba(159,180,199,0.10)", markers: results.trade_log,
+  });
+
+  const rows = (results.trade_log || []).slice().reverse();
+  if (!rows.length) {
+    $("#tradeTableWrap").innerHTML = `<div class="empty">No trades yet.</div>`;
+  } else {
+    $("#tradeTableWrap").innerHTML =
+      "<table class=\"data\"><thead><tr><th>Date</th><th>Side</th><th>Price</th><th>Size</th></tr></thead><tbody>" +
+      rows.map((t) => `<tr><td>${esc(t.date)}</td><td class="side-${t.side.toLowerCase()}">${esc(t.side)}</td>` +
+        `<td>${fmtNum(t.price)}</td><td>${esc(t.size)}</td></tr>`).join("") +
+      "</tbody></table>";
+  }
+}
+
+load();
+setInterval(load, 5000);
+window.addEventListener("resize", load);
+</script>
+</body>
+</html>
