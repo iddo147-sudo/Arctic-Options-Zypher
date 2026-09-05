@@ -4,10 +4,21 @@ Alpaca is connected (see ../paper_trade_alpaca.py). Reads results.json, written 
 ../backtest.py after every run, so re-running a backtest and refreshing the page is the
 whole workflow -- no server restart needed.
 
-Reads and displays only. Nothing here talks to a broker or moves money on its own -- it
-only reads whatever backtest.py or paper_trade_alpaca.py already wrote to disk. Neither
-this file nor the dashboard it serves ever sees ALPACA_API_KEY/ALPACA_SECRET_KEY -- those
-stay in paper_trade_alpaca.py's own process only.
+Reads and displays only, as far as any real trading goes -- nothing here talks to a broker
+or moves money. Neither this file nor the dashboard it serves ever sees
+ALPACA_API_KEY/ALPACA_SECRET_KEY -- those stay in paper_trade_alpaca.py's own process only.
+
+REPORTING ENDPOINTS (2026-09-05, for running the agent as a separate scheduled Railway
+service): a Railway Cron Schedule service runs in its OWN container with its OWN disk, so
+if paper_trade_alpaca.py only wrote local files, a worker service's output would never
+reach this dashboard service at all -- two different filesystems. /api/report_status and
+/api/report_trade let the agent push its state here over HTTP instead, authenticated by
+AGENT_REPORT_TOKEN (a separate secret from DASHBOARD_PASSWORD, since one's for reading the
+dashboard and the other's for the agent writing to it -- a leaked read password shouldn't
+let someone fake trade reports). Locally, paper_trade_alpaca.py still writes
+agent_status.json/agent_trades.json directly and skips these entirely (no DASHBOARD_URL
+configured) -- both paths write to the exact same files, so /api/status and
+/api/live_trades below don't need to know which one produced them.
 """
 
 import base64
@@ -34,6 +45,10 @@ TRADES_PATH = BASE_DIR / "agent_trades.json"  # real fills, appended to by paper
 # to leave open to anyone who finds the link. Unset means remote reads are refused outright
 # rather than served openly.
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+# Separate secret from DASHBOARD_PASSWORD -- see this file's module docstring. Unset means
+# report writes are refused outright, same "refuse rather than serve/accept openly" stance
+# require_reader already takes for reads.
+AGENT_REPORT_TOKEN = os.getenv("AGENT_REPORT_TOKEN", "")
 
 
 def _peer_ip(request: Request) -> str:
@@ -69,6 +84,17 @@ def require_reader(request: Request):
     )
 
 
+def require_agent(request: Request):
+    """Gate for the two report_* write endpoints -- a bearer token, not the dashboard's own
+    HTTP Basic reader password. No loopback exemption here on purpose: even a local run
+    that happens to set DASHBOARD_URL should still have to present the real token."""
+    if not AGENT_REPORT_TOKEN:
+        raise HTTPException(status_code=503, detail="AGENT_REPORT_TOKEN is not set -- agent reports refused")
+    header = request.headers.get("authorization", "")
+    if header != f"Bearer {AGENT_REPORT_TOKEN}":
+        raise HTTPException(status_code=401, detail="invalid or missing agent token")
+
+
 app = FastAPI(title="Futures Bot Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -101,3 +127,25 @@ def live_trades():
     if not TRADES_PATH.exists():
         return []
     return json.loads(TRADES_PATH.read_text())
+
+
+@app.post("/api/report_status", dependencies=[Depends(require_agent)])
+async def report_status(request: Request):
+    """paper_trade_alpaca.py's HTTP path for a status update -- see module docstring. The
+    body is whatever write_status() there builds, stored verbatim so /api/status just
+    echoes it back unchanged."""
+    payload = await request.json()
+    STATUS_PATH.parent.mkdir(exist_ok=True)
+    STATUS_PATH.write_text(json.dumps(payload, indent=2))
+    return {"ok": True}
+
+
+@app.post("/api/report_trade", dependencies=[Depends(require_agent)])
+async def report_trade(request: Request):
+    """paper_trade_alpaca.py's HTTP path for one real fill -- appended the same way
+    log_live_trade() appends locally, so /api/live_trades sees an identical shape either way."""
+    trade = await request.json()
+    trades = json.loads(TRADES_PATH.read_text()) if TRADES_PATH.exists() else []
+    trades.append(trade)
+    TRADES_PATH.write_text(json.dumps(trades, indent=2))
+    return {"ok": True}

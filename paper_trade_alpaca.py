@@ -21,6 +21,8 @@ import datetime
 import json
 import pathlib
 import os
+import urllib.error
+import urllib.request
 
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
@@ -42,12 +44,36 @@ TRADES_PATH = WEBAPP_DIR / "agent_trades.json"
 # drift out of sync with what the broker actually thinks we hold.
 POSITION_STATE_PATH = WEBAPP_DIR / "agent_position_state.json"
 
+# Only set when this runs as a SEPARATE Railway service (a Cron Schedule) from the
+# dashboard -- that's its own container with its own disk, so writing local files alone
+# would never reach the dashboard's. When unset (the local-dev case), _report() is a no-op
+# and the local file writes below are the only thing that happens, same as before this
+# existed. See webapp/main.py's module docstring for the receiving end.
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "").rstrip("/")
+AGENT_REPORT_TOKEN = os.environ.get("AGENT_REPORT_TOKEN", "")
+
+
+def _report(path: str, payload: dict):
+    if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
+        return
+    req = urllib.request.Request(
+        f"{DASHBOARD_URL}{path}",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {AGENT_REPORT_TOKEN}"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except urllib.error.URLError as e:
+        # Never let a dashboard-reporting hiccup fail the actual trading run -- the order
+        # already went through Alpaca (or didn't) by the time this fires either way.
+        print(f"[warn] failed to report to dashboard at {DASHBOARD_URL}: {e}")
+
 
 def write_status(**fields):
     """Lets the dashboard's 'agent connected' badge mean something real -- see
     webapp/main.py's own /api/status, which just reports connected=false until this file
-    exists."""
-    STATUS_PATH.parent.mkdir(exist_ok=True)
+    (or a report_status push) exists."""
     payload = {
         "connected": True,
         "account_type": "paper",
@@ -55,22 +81,26 @@ def write_status(**fields):
         "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
     payload.update(fields)
+    STATUS_PATH.parent.mkdir(exist_ok=True)
     STATUS_PATH.write_text(json.dumps(payload, indent=2))
+    _report("/api/report_status", payload)
 
 
 def log_live_trade(side, price, size, reason):
     """Appends one real fill to agent_trades.json -- the dashboard's 'Live trades' panel,
     kept entirely separate from a backtest's trade_log so the two are never confused for
     each other."""
-    trades = json.loads(TRADES_PATH.read_text()) if TRADES_PATH.exists() else []
-    trades.append({
+    trade = {
         "date": datetime.date.today().isoformat(),
         "side": side,
         "price": round(price, 2),
         "size": size,
         "reason": reason,
-    })
+    }
+    trades = json.loads(TRADES_PATH.read_text()) if TRADES_PATH.exists() else []
+    trades.append(trade)
     TRADES_PATH.write_text(json.dumps(trades, indent=2))
+    _report("/api/report_trade", trade)
 
 
 def load_entry_date():
