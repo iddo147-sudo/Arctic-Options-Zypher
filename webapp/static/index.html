@@ -122,6 +122,71 @@ table.data th { color: var(--ink-3); font-family: var(--pixel-font); font-weight
 .side-sell { color: var(--down-lift); font-weight: 600; }
 
 .empty { padding: 34px 4px; text-align: center; color: var(--ink-3); font-size: 13.5px; }
+
+/* ---- mascot -------------------------------------------------------------------
+   A little pixel-art bot standing in for the agent -- explicit user request ("a
+   little cute bot working"). Built from plain blocky divs (no image asset) to match
+   the rest of this dashboard's sharp-cornered, no-external-asset style. Four states
+   driven by /api/status in the JS below: dormant (backtest mode, no live agent),
+   idle (connected, holding), working (mid-check), traded (just fired an order --
+   a brief celebration before settling back to idle). */
+.mascot { display: flex; align-items: center; gap: 10px; }
+.mascot-bot {
+  position: relative;
+  width: 34px; height: 34px;
+  animation: botBob 2.4s ease-in-out infinite;
+}
+.mascot-head {
+  position: absolute; top: 0; left: 5px; width: 24px; height: 16px;
+  background: var(--surface-2); border: 2px solid var(--ink-3);
+}
+.mascot-antenna { position: absolute; top: -8px; left: 16px; width: 2px; height: 8px; background: var(--ink-3); }
+.mascot-antenna-tip {
+  position: absolute; top: -12px; left: 14px; width: 6px; height: 6px;
+  background: var(--ink-3); animation: botBlink 1.6s steps(1) infinite;
+}
+.mascot-eye {
+  position: absolute; top: 6px; width: 5px; height: 5px; background: var(--ink-3);
+}
+.mascot-eye.left { left: 9px; }
+.mascot-eye.right { left: 18px; }
+.mascot-body {
+  position: absolute; top: 16px; left: 2px; width: 30px; height: 18px;
+  background: var(--surface-2); border: 2px solid var(--ink-3);
+}
+.mascot-panel {
+  position: absolute; top: 21px; left: 9px; width: 16px; height: 8px;
+  background: var(--surface-1); border: 1px solid var(--ink-3);
+}
+
+/* Dormant: no live agent -- everything dims, eyes shut (thin horizontal lines), no lights. */
+.mascot-bot.dormant { animation: none; opacity: 0.55; }
+.mascot-bot.dormant .mascot-eye { height: 1px; top: 9px; }
+.mascot-bot.dormant .mascot-antenna-tip { animation: none; background: var(--ink-3); }
+
+/* Idle/working/traded: eyes and antenna light up warm-green, matching --up everywhere else. */
+.mascot-bot.idle .mascot-eye, .mascot-bot.working .mascot-eye, .mascot-bot.traded .mascot-eye {
+  background: var(--up-lift); box-shadow: 0 0 4px var(--up-lift);
+}
+.mascot-bot.idle .mascot-antenna-tip, .mascot-bot.working .mascot-antenna-tip, .mascot-bot.traded .mascot-antenna-tip {
+  background: var(--up-lift); box-shadow: 0 0 5px var(--up-lift);
+}
+.mascot-bot.working .mascot-antenna-tip { animation: botBlink 0.4s steps(1) infinite; }
+.mascot-bot.working .mascot-panel { animation: botScan 0.9s ease-in-out infinite; }
+.mascot-bot.traded { animation: botBounce 0.6s ease-out 2; }
+.mascot-bot.traded .mascot-eye, .mascot-bot.traded .mascot-antenna-tip {
+  background: var(--up); box-shadow: 0 0 8px var(--up-lift);
+}
+
+@keyframes botBob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+@keyframes botBlink { 0%, 84% { opacity: 1; } 92% { opacity: 0.15; } 100% { opacity: 1; } }
+@keyframes botScan { 0%, 100% { background: var(--surface-1); } 50% { background: color-mix(in oklab, var(--up) 35%, var(--surface-1)); } }
+@keyframes botBounce { 0%, 100% { transform: translateY(0) scale(1); } 40% { transform: translateY(-7px) scale(1.08); } 60% { transform: translateY(1px) scale(0.97); } }
+@media (prefers-reduced-motion: reduce) {
+  .mascot-bot, .mascot-antenna-tip, .mascot-panel { animation: none !important; }
+}
+
+.mascot-caption { color: var(--ink-3); font-size: 10.5px; font-family: var(--pixel-font); max-width: 130px; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -132,6 +197,20 @@ table.data th { color: var(--ink-3); font-family: var(--pixel-font); font-weight
       <p class="sub">MA crossover, stocks/ETFs — paper only until proven.</p>
     </div>
     <div class="spacer"></div>
+    <div class="mascot">
+      <span class="mascot-caption" id="mascotCaption">waiting for status…</span>
+      <div class="mascot-bot dormant" id="mascotBot">
+        <div class="mascot-antenna"></div>
+        <div class="mascot-antenna-tip"></div>
+        <div class="mascot-head">
+          <div class="mascot-eye left"></div>
+          <div class="mascot-eye right"></div>
+        </div>
+        <div class="mascot-body">
+          <div class="mascot-panel"></div>
+        </div>
+      </div>
+    </div>
     <span class="badge"><span class="dot" id="agentDot"></span><span id="agentText">checking…</span></span>
   </header>
 
@@ -227,6 +306,38 @@ function drawLineChart(canvas, points, valueKey, opts = {}) {
   }
 }
 
+// Tracks the last order id we already celebrated, so a re-poll of the SAME status
+// (nothing new happened) doesn't replay the trade-bounce animation every 5 seconds.
+let lastCelebratedOrderId = null;
+
+function updateMascot(status) {
+  const bot = $("#mascotBot");
+  const caption = $("#mascotCaption");
+  bot.classList.remove("dormant", "idle", "working", "traded");
+
+  if (!status.connected) {
+    bot.classList.add("dormant");
+    caption.textContent = "sleeping — no live agent yet";
+    return;
+  }
+
+  const isNewTrade = status.last_order_id && status.last_order_id !== lastCelebratedOrderId;
+  if (isNewTrade) {
+    lastCelebratedOrderId = status.last_order_id;
+    bot.classList.add("traded");
+    caption.textContent = status.last_action || "just traded!";
+    return;
+  }
+
+  if (status.last_action === "checking") {
+    bot.classList.add("working");
+    caption.textContent = "checking " + (status.symbol || "the market") + "…";
+  } else {
+    bot.classList.add("idle");
+    caption.textContent = status.last_action || "watching, holding position";
+  }
+}
+
 async function load() {
   let results, status;
   try {
@@ -260,6 +371,8 @@ async function load() {
     text.textContent = "no live agent — backtest mode";
     agentPanel.style.display = "none";
   }
+
+  updateMascot(status);
 
   if (results.available === false) {
     $("#tiles").innerHTML = `<div class="empty">${esc(results.reason)}</div>`;
