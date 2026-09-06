@@ -51,6 +51,11 @@ PARAM_GRIDS = {
         "trend_period": [50, 100],
         "stop_pct": [0.03, 0.05, 0.08],
     },
+    "relief_short": {
+        "overbought": [65, 70, 75],
+        "exit_rsi": [35, 40, 45],
+        "trend_period": [50, 100],
+    },
     "momentum": {
         "lookback": [5, 10, 20],
         "entry_threshold": [0.02, 0.04, 0.06],

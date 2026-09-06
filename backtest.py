@@ -27,6 +27,7 @@ from strategies.momentum import Momentum
 from strategies.rsi_reversion import RSIReversion
 from strategies.breakout import Breakout
 from strategies.breakdown import Breakdown
+from strategies.relief_short import ReliefShort
 
 DATA_DIR = pathlib.Path(__file__).parent / "data"
 WEBAPP_DIR = pathlib.Path(__file__).parent / "webapp"
@@ -40,6 +41,7 @@ STRATEGIES = {
     "rsi": RSIReversion,
     "breakout": Breakout,
     "breakdown": Breakdown,
+    "relief_short": ReliefShort,
 }
 
 
