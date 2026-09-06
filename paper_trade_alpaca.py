@@ -430,11 +430,26 @@ def run(strategy: str, symbols: list[str], shares: int):
         "connected": True,
         "account_type": "paper",
         "strategy": strategy,
-        "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        # timezone-aware (not naive datetime.now()) -- 2026-09-06: the dashboard's new
+        # live-ticking "Xs ago" clock parses this in the VIEWER's browser, which is very
+        # unlikely to share Railway's UTC system clock. A naive timestamp gets silently
+        # misread as the viewer's own local time, offsetting "time ago" by their UTC offset.
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "buying_power": buying_power,
         "last_action": summary,
         "last_order_id": fired[-1][2] if fired else None,
         "tickers": tickers,
+        # Read-only, for the dashboard's Settings view -- the validated config this run
+        # actually used, not something editable from the web (changing live params without
+        # re-running the walk-forward validation would defeat the entire point of tonight).
+        "config": {
+            "breakout": {
+                "trend_period": Breakout.params.trend_period, "breakout_period": Breakout.params.breakout_period,
+                "stop_pct": Breakout.params.stop_pct, "target_pct": Breakout.params.target_pct,
+                "max_hold_days": Breakout.params.max_hold_days, "shares": shares, "universe_size": len(symbols),
+            },
+            "rsi": {**RSI_PARAMS, "shares": shares, "universe_size": len(symbols)},
+        }[strategy],
     }
     status_path(strategy).parent.mkdir(exist_ok=True)
     status_path(strategy).write_text(json.dumps(payload, indent=2))

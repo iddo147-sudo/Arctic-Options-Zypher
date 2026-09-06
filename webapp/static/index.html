@@ -203,6 +203,56 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
 }
 
 .mascot-caption { color: var(--ink-3); font-size: 11px; font-family: var(--tech-font); max-width: 150px; line-height: 1.5; }
+
+/* ---- CCTV monitor-wall chrome (2026-09-06, explicit user request -- "make the whole
+   system look like a closed circuit... make the agent displays feel a bit more alive").
+   Each live agent renders as its own camera feed: an on-screen-display label top-left
+   ("CAM 01 -- BREAKOUT"), a blinking REC indicator top-right, a live-ticking timestamp
+   bottom-right, and a faint scanline+vignette overlay -- all absolutely positioned INSIDE
+   the existing .panel (which already clips to the HUD diagonal-corner shape), so this reads
+   as chrome on top of the established look rather than a competing style. */
+.feed-panel { position: relative; padding-top: 44px; }
+.feed-scanline {
+  /* Plain low-opacity overlay, same technique as the page's own body::after scanlines --
+     deliberately NOT mix-blend-mode (tested and dropped: caused a solid black rendering
+     artifact on this same repeating-gradient + position:absolute combination). */
+  position: absolute; inset: 0; pointer-events: none; z-index: 1; opacity: 0.5;
+  background: repeating-linear-gradient(0deg, rgba(93,224,255,0.05) 0px, rgba(93,224,255,0.05) 1px, transparent 1px, transparent 3px);
+}
+.feed-vignette {
+  position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  background: radial-gradient(140% 90% at 50% 20%, transparent 60%, rgba(0,0,0,0.30) 100%);
+}
+.feed-osd {
+  position: absolute; top: 16px; left: 26px; z-index: 2;
+  font-family: var(--tech-font); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--accent); text-shadow: 0 0 6px rgba(93,224,255,.5);
+}
+.feed-rec {
+  position: absolute; top: 15px; right: 26px; z-index: 2; display: flex; align-items: center; gap: 6px;
+  font-family: var(--tech-font); font-size: 10.5px; letter-spacing: .1em; color: var(--down-lift);
+}
+.feed-rec .rec-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--down-lift); box-shadow: 0 0 6px var(--down-lift);
+  animation: recBlink 1.4s steps(2, jump-none) infinite;
+}
+@keyframes recBlink { 50% { opacity: 0.15; } }
+.feed-timestamp {
+  font-family: var(--tech-font); font-size: 10.5px; color: var(--ink-3); letter-spacing: .04em;
+}
+@media (prefers-reduced-motion: reduce) { .feed-rec .rec-dot { animation: none; } }
+
+/* A ticker row briefly highlights when its data actually changes between polls -- "alive"
+   readback instead of numbers just silently being different next time you glance over. */
+@keyframes rowFlash { 0% { background: rgba(93,224,255,0.22); } 100% { background: transparent; } }
+tr.row-flash { animation: rowFlash 1.6s ease-out; }
+
+/* ---- settings / config table ---------------------------------------------------------- */
+table.config { width: 100%; border-collapse: collapse; font-size: 12.5px; font-family: var(--tech-font); }
+table.config th { text-align: left; color: var(--accent); font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+table.config td { padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
+table.config td.param-name { color: var(--ink-3); }
+table.config td.param-value { color: var(--ink); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -235,10 +285,22 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
        disjoint ticker universe, so this can't be a single static panel anymore. -->
   <div id="agentsWrap"></div>
 
+  <section class="panel" id="resultsOverTimePanel" style="display:none">
+    <h2>Results over time</h2>
+    <p class="hint">Cumulative realized P&amp;L per agent, computed from actual closed round-trips in the live trade history below -- this is the real, ongoing paper-trading record, separate from the one-time historical backtest further down.</p>
+    <canvas id="pnlChart" height="200"></canvas>
+  </section>
+
   <section class="panel" id="liveTradesPanel" style="display:none">
     <h2>Live trades</h2>
     <p class="hint">Real fills submitted by paper_trade_alpaca.py against your Alpaca paper account -- separate from the backtest trade log below, which is simulated.</p>
     <div id="liveTradeTableWrap"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section class="panel" id="settingsPanel" style="display:none">
+    <h2>System configuration</h2>
+    <p class="hint">The validated, currently-live parameters each agent actually ran with last -- read-only by design. Changing a live parameter without re-running the walk-forward validation would defeat the entire point of testing before trusting.</p>
+    <div id="settingsWrap"></div>
   </section>
 
   <section class="panel">
@@ -325,6 +387,29 @@ function drawLineChart(canvas, points, valueKey, opts = {}) {
   }
 }
 
+// ---- live-ticking relative timestamps ("4s ago") -------------------------------------
+// Elements carrying data-since get their text recomputed every second, independent of the
+// 5s poll cycle -- makes the feed read as genuinely live rather than a number that only
+// changes when the page happens to reload data.
+function relTime(iso) {
+  const diff = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60) return Math.floor(diff) + "s ago";
+  if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+  if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+  return Math.floor(diff / 86400) + "d ago";
+}
+function tickClocks() {
+  document.querySelectorAll("[data-since]").forEach((el) => { el.textContent = relTime(el.dataset.since); });
+}
+setInterval(tickClocks, 1000);
+
+// ---- per-ticker-row change detection ---------------------------------------------------
+// Remembers each (strategy, symbol)'s last last_action string across polls so a row that
+// genuinely changed can flash -- not on first load (nothing "changed" from nothing, that
+// would just flash the whole table every time you open the page).
+const lastTickerAction = new Map();
+let hasRenderedAgentsOnce = false;
+
 // Tracks the last order id we already celebrated PER STRATEGY (a Set, not one value) --
 // 2026-09-06: more than one agent can fire in the same poll cycle now, so a single
 // "lastCelebratedOrderId" would miss a second agent's trade if it happened to arrive in the
@@ -357,7 +442,7 @@ function updateMascot(agentsList) {
   caption.textContent = summary || "watching, holding position";
 }
 
-function renderAgentPanel(strategy, status) {
+function renderAgentPanel(strategy, status, camIndex) {
   const tickerEntries = Object.entries(status.tickers || {});
   // rsi status rows carry "rsi" instead of "trend_ma"/"highest" -- render whichever this
   // agent's ticker data actually has rather than assuming breakout's specific fields.
@@ -367,7 +452,7 @@ function renderAgentPanel(strategy, status) {
     : "—";
 
   const tiles = [
-    ["Strategy", strategy, status.updated_at ? "as of " + new Date(status.updated_at).toLocaleString() : "", "up"],
+    ["Strategy", strategy, "", "up"],
     ["Last action", status.last_action || "—", status.last_order_id ? "order " + status.last_order_id.slice(0, 8) : "", "up"],
     ["Buying power", status.buying_power != null ? "$" + Number(status.buying_power).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", "paper account", "up"],
   ].map(([label, value, foot, tone]) =>
@@ -378,19 +463,115 @@ function renderAgentPanel(strategy, status) {
   const tickerTable = !tickerEntries.length
     ? `<div class="empty">No ticker data yet.</div>`
     : "<table class=\"data\"><thead><tr><th>Symbol</th><th>Position</th><th>Close</th><th>Level</th><th>Last action</th></tr></thead><tbody>" +
-      tickerEntries.map(([sym, t]) => `<tr><td>${esc(sym)}</td>` +
-        `<td>${t.position != null ? t.position : "—"}</td>` +
-        `<td>${t.close != null ? fmtNum(t.close) : "—"}</td>` +
-        `<td>${levelCol(t)}</td>` +
-        `<td>${esc(t.error ? "error: " + t.error : (t.last_action || "—"))}</td></tr>`).join("") +
+      tickerEntries.map(([sym, t]) => {
+        const key = strategy + "|" + sym;
+        const actionText = t.error ? "error: " + t.error : (t.last_action || "—");
+        const changed = hasRenderedAgentsOnce && lastTickerAction.get(key) !== actionText;
+        lastTickerAction.set(key, actionText);
+        return `<tr${changed ? ' class="row-flash"' : ""}><td>${esc(sym)}</td>` +
+          `<td>${t.position != null ? t.position : "—"}</td>` +
+          `<td>${t.close != null ? fmtNum(t.close) : "—"}</td>` +
+          `<td>${levelCol(t)}</td>` +
+          `<td>${esc(actionText)}</td></tr>`;
+      }).join("") +
       "</tbody></table>";
 
-  return `<section class="panel">
-    <h2>Live agent — ${esc(strategy)}</h2>
-    <p class="hint">Written by paper_trade_alpaca.py --strategy ${esc(strategy)} the last time it ran.</p>
+  return `<section class="panel feed-panel">
+    <div class="feed-scanline"></div>
+    <div class="feed-vignette"></div>
+    <div class="feed-osd">CAM ${String(camIndex).padStart(2, "0")} — ${esc(strategy.toUpperCase())}</div>
+    <div class="feed-rec"><span class="rec-dot"></span>LIVE</div>
+    <p class="hint" style="margin-top:0">Written by paper_trade_alpaca.py --strategy ${esc(strategy)} the last time it ran
+      ${status.updated_at ? `(<span data-since="${esc(status.updated_at)}">${relTime(status.updated_at)}</span>)` : ""}.</p>
     <div class="tiles">${tiles}</div>
     <div style="margin-top:16px">${tickerTable}</div>
   </section>`;
+}
+
+// ---- results-over-time: cumulative realized P&L per agent, derived from actual closed
+// round-trips in the live trade history (FIFO-paired BUY->SELL per strategy+symbol) --------
+function computePnlSeries(trades) {
+  const openBySymbol = new Map();   // "strategy|symbol" -> queue of {price, size}
+  const cumulativeByStrategy = new Map();
+  const seriesByStrategy = new Map();
+  const sorted = (trades || []).slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  for (const t of sorted) {
+    const strat = t.strategy || "—";
+    const key = strat + "|" + t.symbol;
+    if (t.side === "BUY") {
+      if (!openBySymbol.has(key)) openBySymbol.set(key, []);
+      openBySymbol.get(key).push({ price: t.price, size: t.size });
+    } else if (t.side === "SELL") {
+      const queue = openBySymbol.get(key);
+      const entry = queue && queue.shift();
+      if (!entry) continue;  // a SELL with no matching BUY on record (e.g. history starts mid-position) -- skip rather than guess
+      const pnl = (t.price - entry.price) * Math.min(entry.size, t.size);
+      const running = (cumulativeByStrategy.get(strat) || 0) + pnl;
+      cumulativeByStrategy.set(strat, running);
+      if (!seriesByStrategy.has(strat)) seriesByStrategy.set(strat, []);
+      seriesByStrategy.get(strat).push({ date: t.date, value: running });
+    }
+  }
+  return seriesByStrategy;
+}
+
+const PNL_COLORS = ["#6fe3a0", "#5de0ff", "#f2c14b", "#f28a8a"];
+
+function drawMultiLineChart(canvas, seriesMap, opts = {}) {
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight || 200;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const series = Array.from(seriesMap.entries()).map(([label, points], i) => ({ label, points, color: PNL_COLORS[i % PNL_COLORS.length] }));
+  const allValues = series.flatMap((s) => s.points.map((p) => p.value));
+  if (!allValues.length) {
+    ctx.fillStyle = "#647d93"; ctx.font = "13px sans-serif";
+    ctx.fillText(opts.emptyText || "No closed round-trips yet", 12, h / 2);
+    return;
+  }
+
+  const min = Math.min(0, ...allValues), max = Math.max(0, ...allValues);
+  const pad = (max - min) * 0.15 || 1;
+  const yMin = min - pad, yMax = max + pad;
+  const yOf = (v) => h - ((v - yMin) / (yMax - yMin)) * h;
+
+  // Zero line -- makes "above zero" (net profit so far) vs "below zero" immediately readable.
+  ctx.strokeStyle = "rgba(147,178,196,0.3)"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, yOf(0)); ctx.lineTo(w, yOf(0)); ctx.stroke(); ctx.setLineDash([]);
+
+  series.forEach((s) => {
+    if (!s.points.length) return;
+    const xStep = w / Math.max(1, s.points.length - 1);
+    ctx.beginPath();
+    s.points.forEach((p, i) => { const x = i * xStep, y = yOf(p.value); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.stroke();
+    const lastX = (s.points.length - 1) * xStep, lastY = yOf(s.points[s.points.length - 1].value);
+    ctx.beginPath(); ctx.arc(lastX, lastY, 3.5, 0, Math.PI * 2); ctx.fillStyle = s.color; ctx.fill();
+  });
+
+  let lx = 8;
+  ctx.font = "11px 'Share Tech Mono', monospace";
+  series.forEach((s) => {
+    ctx.fillStyle = s.color; ctx.fillRect(lx, 8, 8, 8);
+    ctx.fillStyle = "#93b2c4"; ctx.fillText(`${s.label} (${s.points[s.points.length - 1].value >= 0 ? "+" : ""}$${s.points[s.points.length - 1].value.toFixed(2)})`, lx + 12, 16);
+    lx += 24 + ctx.measureText(s.label).width;
+  });
+}
+
+// ---- settings / system configuration, read-only ----------------------------------------
+function renderConfigPanel(agentEntries) {
+  if (!agentEntries.length) return "";
+  return agentEntries.map(([strategy, status]) => {
+    const cfg = status.config || {};
+    const rows = Object.entries(cfg).map(([k, v]) =>
+      `<tr><td class="param-name">${esc(k)}</td><td class="param-value">${esc(v)}</td></tr>`).join("");
+    return `<div style="margin-bottom:18px"><div class="label" style="color:var(--accent);font-family:var(--tech-font);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">${esc(strategy)}</div>` +
+      `<table class="config"><thead><tr><th>Parameter</th><th>Value</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }).join("");
 }
 
 async function load() {
@@ -408,6 +589,8 @@ async function load() {
 
   const dot = $("#agentDot"), text = $("#agentText");
   const liveTradesPanel = $("#liveTradesPanel");
+  const resultsOverTimePanel = $("#resultsOverTimePanel");
+  const settingsPanel = $("#settingsPanel");
   const agentEntries = Object.entries(agentsData || {}).filter(([, s]) => s.connected);
 
   if (agentEntries.length) {
@@ -416,8 +599,12 @@ async function load() {
       ? "agent connected — " + (agentEntries[0][1].account_type || "paper")
       : `${agentEntries.length} agents connected — paper`;
     liveTradesPanel.style.display = "";
+    resultsOverTimePanel.style.display = "";
+    settingsPanel.style.display = "";
 
-    $("#agentsWrap").innerHTML = agentEntries.map(([strategy, status]) => renderAgentPanel(strategy, status)).join("");
+    $("#agentsWrap").innerHTML = agentEntries.map(([strategy, status], i) => renderAgentPanel(strategy, status, i + 1)).join("");
+    hasRenderedAgentsOnce = true;
+    $("#settingsWrap").innerHTML = renderConfigPanel(agentEntries);
 
     const liveRows = (liveTrades || []).slice().reverse();
     $("#liveTradeTableWrap").innerHTML = !liveRows.length
@@ -426,11 +613,15 @@ async function load() {
         liveRows.map((t) => `<tr><td>${esc(t.date)}</td><td>${esc(t.strategy || "—")}</td><td>${esc(t.symbol || "—")}</td><td class="side-${t.side.toLowerCase()}">${esc(t.side)}</td>` +
           `<td>${fmtNum(t.price)}</td><td>${esc(t.size)}</td><td>${esc(t.reason || "")}</td></tr>`).join("") +
         "</tbody></table>";
+
+    drawMultiLineChart($("#pnlChart"), computePnlSeries(liveTrades));
   } else {
     dot.classList.remove("live");
     text.textContent = "no live agent — backtest mode";
     $("#agentsWrap").innerHTML = "";
     liveTradesPanel.style.display = "none";
+    resultsOverTimePanel.style.display = "none";
+    settingsPanel.style.display = "none";
   }
 
   updateMascot(agentEntries.map(([strategy, status]) => ({ strategy, ...status })));
