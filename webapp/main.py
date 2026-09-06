@@ -22,9 +22,17 @@ the exact same files, so the GET endpoints below don't need to know which one pr
 MULTI-AGENT (2026-09-06, "scale it to a workflow"): status is now PER STRATEGY
 (agent_status_<strategy>.json), since paper_trade_alpaca.py can run more than one validated
 strategy (breakout, rsi) as separate agents with disjoint ticker universes. /api/agents
-returns all of them at once, keyed by strategy name. Trades stay in ONE shared file
-(agent_trades.json) tagged with a "strategy" field per row -- one combined real-fill history
-across every agent.
+returns all of them at once, keyed by strategy name.
+
+TRADE HISTORY PERSISTENCE (2026-09-06, real incident -- a redeploy of THIS service wiped its
+local agent_trades.json, silently losing the one real trade logged so far): a Railway
+container has no persistent disk by default, so every redeploy of this service (which happens
+on every push while actively developing) starts from a completely empty filesystem. Local
+files are fine for status (a fresh report arrives within a day anyway) but NOT for trade
+HISTORY, which should never just vanish. Trades now persist in the Postgres database already
+running in this same Railway project (DATABASE_URL) when it's configured, falling back to the
+local agent_trades.json file when it's not (e.g. local dev without a database) -- same
+"off/local unless configured" pattern as DASHBOARD_URL elsewhere in this project.
 """
 
 import base64
@@ -35,6 +43,7 @@ import os
 import re
 import secrets
 
+import psycopg2
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -44,7 +53,41 @@ load_dotenv()
 
 BASE_DIR = pathlib.Path(__file__).parent
 RESULTS_PATH = BASE_DIR / "results.json"
-TRADES_PATH = BASE_DIR / "agent_trades.json"  # real fills, appended to by paper_trade_alpaca.py
+TRADES_PATH = BASE_DIR / "agent_trades.json"  # local-dev fallback only when DATABASE_URL is unset
+
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+
+def _db_connection():
+    return psycopg2.connect(DATABASE_URL)
+
+
+def _ensure_trades_table():
+    if not DATABASE_URL:
+        return
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id SERIAL PRIMARY KEY,
+                trade_date TEXT,
+                strategy TEXT,
+                symbol TEXT,
+                side TEXT,
+                price NUMERIC,
+                size INTEGER,
+                reason TEXT,
+                reported_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        conn.commit()
+
+
+try:
+    _ensure_trades_table()
+except psycopg2.Error as e:
+    # Don't take down the whole dashboard over a DB hiccup at startup -- a real connectivity
+    # problem will surface again (and print again) on the next actual read/write attempt.
+    print(f"[warn] could not reach Postgres at startup: {e}")
 
 # Allowlist, not just "any string" -- this becomes part of a filename below
 # (agent_status_<strategy>.json), so validate it rather than trust an arbitrary path segment.
@@ -143,6 +186,18 @@ def agents():
 def live_trades():
     # Real fills, separate from a backtest's trade_log -- empty rather than 404 before the
     # agent has ever placed a real order, same "report the honest state" pattern as /api/status.
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute("SELECT trade_date, strategy, symbol, side, price, size, reason FROM trades ORDER BY id ASC")
+                rows = cur.fetchall()
+            return [
+                {"date": r[0], "strategy": r[1], "symbol": r[2], "side": r[3], "price": float(r[4]), "size": r[5], "reason": r[6]}
+                for r in rows
+            ]
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres read failed, falling back to local file: {e}")
+
     if not TRADES_PATH.exists():
         return []
     return json.loads(TRADES_PATH.read_text())
@@ -162,9 +217,24 @@ async def report_status(strategy: str, request: Request):
 
 @app.post("/api/report_trade", dependencies=[Depends(require_agent)])
 async def report_trade(request: Request):
-    """paper_trade_alpaca.py's HTTP path for one real fill -- appended the same way
-    log_live_trade() appends locally, so /api/live_trades sees an identical shape either way."""
+    """paper_trade_alpaca.py's HTTP path for one real fill. Persists to Postgres when
+    configured (survives this service's own redeploys -- see module docstring for the
+    2026-09-06 incident that made this necessary), falling back to the local file otherwise."""
     trade = await request.json()
+
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO trades (trade_date, strategy, symbol, side, price, size, reason) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (trade.get("date"), trade.get("strategy"), trade.get("symbol"), trade.get("side"),
+                     trade.get("price"), trade.get("size"), trade.get("reason")),
+                )
+                conn.commit()
+            return {"ok": True}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
     trades = json.loads(TRADES_PATH.read_text()) if TRADES_PATH.exists() else []
     trades.append(trade)
     TRADES_PATH.write_text(json.dumps(trades, indent=2))
