@@ -11,14 +11,20 @@ ALPACA_API_KEY/ALPACA_SECRET_KEY -- those stay in paper_trade_alpaca.py's own pr
 REPORTING ENDPOINTS (2026-09-05, for running the agent as a separate scheduled Railway
 service): a Railway Cron Schedule service runs in its OWN container with its OWN disk, so
 if paper_trade_alpaca.py only wrote local files, a worker service's output would never
-reach this dashboard service at all -- two different filesystems. /api/report_status and
-/api/report_trade let the agent push its state here over HTTP instead, authenticated by
+reach this dashboard service at all -- two different filesystems. /api/report_status/<strategy>
+and /api/report_trade let the agent push its state here over HTTP instead, authenticated by
 AGENT_REPORT_TOKEN (a separate secret from DASHBOARD_PASSWORD, since one's for reading the
 dashboard and the other's for the agent writing to it -- a leaked read password shouldn't
-let someone fake trade reports). Locally, paper_trade_alpaca.py still writes
-agent_status.json/agent_trades.json directly and skips these entirely (no DASHBOARD_URL
-configured) -- both paths write to the exact same files, so /api/status and
-/api/live_trades below don't need to know which one produced them.
+let someone fake trade reports). Locally, paper_trade_alpaca.py still writes its status/trades
+files directly and skips these entirely (no DASHBOARD_URL configured) -- both paths write to
+the exact same files, so the GET endpoints below don't need to know which one produced them.
+
+MULTI-AGENT (2026-09-06, "scale it to a workflow"): status is now PER STRATEGY
+(agent_status_<strategy>.json), since paper_trade_alpaca.py can run more than one validated
+strategy (breakout, rsi) as separate agents with disjoint ticker universes. /api/agents
+returns all of them at once, keyed by strategy name. Trades stay in ONE shared file
+(agent_trades.json) tagged with a "strategy" field per row -- one combined real-fill history
+across every agent.
 """
 
 import base64
@@ -26,6 +32,7 @@ import ipaddress
 import json
 import pathlib
 import os
+import re
 import secrets
 
 from dotenv import load_dotenv
@@ -37,8 +44,15 @@ load_dotenv()
 
 BASE_DIR = pathlib.Path(__file__).parent
 RESULTS_PATH = BASE_DIR / "results.json"
-STATUS_PATH = BASE_DIR / "agent_status.json"  # written by paper_trade_alpaca.py once that's live
 TRADES_PATH = BASE_DIR / "agent_trades.json"  # real fills, appended to by paper_trade_alpaca.py
+
+# Allowlist, not just "any string" -- this becomes part of a filename below
+# (agent_status_<strategy>.json), so validate it rather than trust an arbitrary path segment.
+VALID_STRATEGIES = re.compile(r"^[a-z_]{1,32}$")
+
+
+def agent_status_path(strategy: str) -> pathlib.Path:
+    return BASE_DIR / f"agent_status_{strategy}.json"
 
 # Same reasoning as the Hardcore Arctic telemetry dashboard's own require_reader: this is
 # about to go on a public Railway URL, and trading strategy/performance data isn't something
@@ -111,13 +125,18 @@ def results():
     return json.loads(RESULTS_PATH.read_text())
 
 
-@app.get("/api/status", dependencies=[Depends(require_reader)])
-def status():
-    # No paper-trading agent connected yet -- this just says so honestly rather than
-    # faking a "connected" state. paper_trade_alpaca.py will write real state here once it runs.
-    if not STATUS_PATH.exists():
-        return {"connected": False}
-    return json.loads(STATUS_PATH.read_text())
+@app.get("/api/agents", dependencies=[Depends(require_reader)])
+def agents():
+    """All known agents' status, keyed by strategy name -- {} before any agent has ever run,
+    same honest-empty-state pattern the old single-agent /api/status used."""
+    result = {}
+    for path in BASE_DIR.glob("agent_status_*.json"):
+        strategy = path.stem.removeprefix("agent_status_")
+        try:
+            result[strategy] = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+    return result
 
 
 @app.get("/api/live_trades", dependencies=[Depends(require_reader)])
@@ -129,14 +148,15 @@ def live_trades():
     return json.loads(TRADES_PATH.read_text())
 
 
-@app.post("/api/report_status", dependencies=[Depends(require_agent)])
-async def report_status(request: Request):
-    """paper_trade_alpaca.py's HTTP path for a status update -- see module docstring. The
-    body is whatever write_status() there builds, stored verbatim so /api/status just
-    echoes it back unchanged."""
+@app.post("/api/report_status/{strategy}", dependencies=[Depends(require_agent)])
+async def report_status(strategy: str, request: Request):
+    """paper_trade_alpaca.py's HTTP path for one agent's status update -- see module
+    docstring. The body is stored verbatim so /api/agents just echoes it back unchanged."""
+    if not VALID_STRATEGIES.match(strategy):
+        raise HTTPException(status_code=400, detail="invalid strategy name")
     payload = await request.json()
-    STATUS_PATH.parent.mkdir(exist_ok=True)
-    STATUS_PATH.write_text(json.dumps(payload, indent=2))
+    agent_status_path(strategy).parent.mkdir(exist_ok=True)
+    agent_status_path(strategy).write_text(json.dumps(payload, indent=2))
     return {"ok": True}
 
 

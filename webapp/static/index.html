@@ -230,12 +230,10 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
 
   <div class="tiles" id="tiles"></div>
 
-  <section class="panel" id="agentPanel" style="display:none">
-    <h2>Live agent</h2>
-    <p class="hint">Written by paper_trade_alpaca.py the last time it ran -- this only exists once that script has actually run against your Alpaca paper account. Watches every ticker the strategy was actually validated on, not just one.</p>
-    <div class="tiles" id="agentTiles"></div>
-    <div id="agentTickersWrap" style="margin-top:16px"></div>
-  </section>
+  <!-- One panel per agent, built by JS from /api/agents -- more than one validated strategy
+       can run as its own agent now (2026-09-06, "scale it to a workflow"), each with its own
+       disjoint ticker universe, so this can't be a single static panel anymore. -->
+  <div id="agentsWrap"></div>
 
   <section class="panel" id="liveTradesPanel" style="display:none">
     <h2>Live trades</h2>
@@ -327,39 +325,80 @@ function drawLineChart(canvas, points, valueKey, opts = {}) {
   }
 }
 
-// Tracks the last order id we already celebrated, so a re-poll of the SAME status
-// (nothing new happened) doesn't replay the trade-bounce animation every 5 seconds.
-let lastCelebratedOrderId = null;
+// Tracks the last order id we already celebrated PER STRATEGY (a Set, not one value) --
+// 2026-09-06: more than one agent can fire in the same poll cycle now, so a single
+// "lastCelebratedOrderId" would miss a second agent's trade if it happened to arrive in the
+// same 5s tick as the first's.
+const celebratedOrderIds = new Set();
 
-function updateMascot(status) {
+function updateMascot(agentsList) {
   const bot = $("#mascotBot");
   const caption = $("#mascotCaption");
   bot.classList.remove("dormant", "idle", "working", "traded");
 
-  if (!status.connected) {
+  if (!agentsList.length) {
     bot.classList.add("dormant");
     caption.textContent = "sleeping — no live agent yet";
     return;
   }
 
-  const isNewTrade = status.last_order_id && status.last_order_id !== lastCelebratedOrderId;
-  if (isNewTrade) {
-    lastCelebratedOrderId = status.last_order_id;
+  const newTrade = agentsList.find((a) => a.last_order_id && !celebratedOrderIds.has(a.last_order_id));
+  if (newTrade) {
+    celebratedOrderIds.add(newTrade.last_order_id);
     bot.classList.add("traded");
-    caption.textContent = status.last_action || "just traded!";
+    caption.textContent = `[${newTrade.strategy}] ` + (newTrade.last_action || "just traded!");
     return;
   }
 
   bot.classList.add("idle");
-  caption.textContent = status.last_action || "watching, holding position";
+  const summary = agentsList.length === 1
+    ? agentsList[0].last_action
+    : `watching ${agentsList.length} agents`;
+  caption.textContent = summary || "watching, holding position";
+}
+
+function renderAgentPanel(strategy, status) {
+  const tickerEntries = Object.entries(status.tickers || {});
+  // rsi status rows carry "rsi" instead of "trend_ma"/"highest" -- render whichever this
+  // agent's ticker data actually has rather than assuming breakout's specific fields.
+  const levelCol = (t) => t.entry_price != null ? "entry " + fmtNum(t.entry_price)
+    : t.highest != null ? "brk " + fmtNum(t.highest)
+    : t.rsi != null ? "RSI " + fmtNum(t.rsi, 1)
+    : "—";
+
+  const tiles = [
+    ["Strategy", strategy, status.updated_at ? "as of " + new Date(status.updated_at).toLocaleString() : "", "up"],
+    ["Last action", status.last_action || "—", status.last_order_id ? "order " + status.last_order_id.slice(0, 8) : "", "up"],
+    ["Buying power", status.buying_power != null ? "$" + Number(status.buying_power).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", "paper account", "up"],
+  ].map(([label, value, foot, tone]) =>
+    `<div class="tile"><div class="label">${esc(label)}</div>` +
+    `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
+  ).join("");
+
+  const tickerTable = !tickerEntries.length
+    ? `<div class="empty">No ticker data yet.</div>`
+    : "<table class=\"data\"><thead><tr><th>Symbol</th><th>Position</th><th>Close</th><th>Level</th><th>Last action</th></tr></thead><tbody>" +
+      tickerEntries.map(([sym, t]) => `<tr><td>${esc(sym)}</td>` +
+        `<td>${t.position != null ? t.position : "—"}</td>` +
+        `<td>${t.close != null ? fmtNum(t.close) : "—"}</td>` +
+        `<td>${levelCol(t)}</td>` +
+        `<td>${esc(t.error ? "error: " + t.error : (t.last_action || "—"))}</td></tr>`).join("") +
+      "</tbody></table>";
+
+  return `<section class="panel">
+    <h2>Live agent — ${esc(strategy)}</h2>
+    <p class="hint">Written by paper_trade_alpaca.py --strategy ${esc(strategy)} the last time it ran.</p>
+    <div class="tiles">${tiles}</div>
+    <div style="margin-top:16px">${tickerTable}</div>
+  </section>`;
 }
 
 async function load() {
-  let results, status, liveTrades;
+  let results, agentsData, liveTrades;
   try {
-    [results, status, liveTrades] = await Promise.all([
+    [results, agentsData, liveTrades] = await Promise.all([
       fetch("/api/results").then((r) => r.json()),
-      fetch("/api/status").then((r) => r.json()),
+      fetch("/api/agents").then((r) => r.json()),
       fetch("/api/live_trades").then((r) => r.json()),
     ]);
   } catch (e) {
@@ -368,54 +407,33 @@ async function load() {
   }
 
   const dot = $("#agentDot"), text = $("#agentText");
-  const agentPanel = $("#agentPanel");
   const liveTradesPanel = $("#liveTradesPanel");
-  if (status.connected) {
-    dot.classList.add("live");
-    text.textContent = "agent connected — " + (status.account_type || "paper");
-    agentPanel.style.display = "";
-    liveTradesPanel.style.display = "";
-    // Account-level tiles -- one agent run now watches several tickers, not one, so
-    // per-symbol detail (position, close, trend) moved to the table below instead of tiles.
-    $("#agentTiles").innerHTML = [
-      ["Strategy", status.strategy || "—", status.updated_at ? "as of " + new Date(status.updated_at).toLocaleString() : "", "up"],
-      ["Last action", status.last_action || "—", status.last_order_id ? "order " + status.last_order_id.slice(0, 8) : "", "up"],
-      ["Buying power", status.buying_power != null ? "$" + Number(status.buying_power).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", "paper account", "up"],
-    ].map(([label, value, foot, tone]) =>
-      `<div class="tile"><div class="label">${esc(label)}</div>` +
-      `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
-    ).join("");
+  const agentEntries = Object.entries(agentsData || {}).filter(([, s]) => s.connected);
 
-    // One row per watched ticker -- status.tickers is {SYMBOL: {position, close, trend_ma,
-    // highest|entry_price, last_action, ...}}, written by the current multi-symbol
-    // paper_trade_alpaca.py. Falls back to nothing gracefully if it's ever missing/empty.
-    const tickerEntries = Object.entries(status.tickers || {});
-    $("#agentTickersWrap").innerHTML = !tickerEntries.length
-      ? `<div class="empty">No ticker data yet.</div>`
-      : "<table class=\"data\"><thead><tr><th>Symbol</th><th>Position</th><th>Close</th><th>Trend SMA</th><th>Level</th><th>Last action</th></tr></thead><tbody>" +
-        tickerEntries.map(([sym, t]) => `<tr><td>${esc(sym)}</td>` +
-          `<td>${t.position != null ? t.position : "—"}</td>` +
-          `<td>${t.close != null ? fmtNum(t.close) : "—"}</td>` +
-          `<td>${t.trend_ma != null ? fmtNum(t.trend_ma) : "—"}</td>` +
-          `<td>${t.entry_price != null ? "entry " + fmtNum(t.entry_price) : (t.highest != null ? "brk " + fmtNum(t.highest) : "—")}</td>` +
-          `<td>${esc(t.error ? "error: " + t.error : (t.last_action || "—"))}</td></tr>`).join("") +
-        "</tbody></table>";
+  if (agentEntries.length) {
+    dot.classList.add("live");
+    text.textContent = agentEntries.length === 1
+      ? "agent connected — " + (agentEntries[0][1].account_type || "paper")
+      : `${agentEntries.length} agents connected — paper`;
+    liveTradesPanel.style.display = "";
+
+    $("#agentsWrap").innerHTML = agentEntries.map(([strategy, status]) => renderAgentPanel(strategy, status)).join("");
 
     const liveRows = (liveTrades || []).slice().reverse();
     $("#liveTradeTableWrap").innerHTML = !liveRows.length
       ? `<div class="empty">No live trades yet.</div>`
-      : "<table class=\"data\"><thead><tr><th>Date</th><th>Symbol</th><th>Side</th><th>Price</th><th>Size</th><th>Reason</th></tr></thead><tbody>" +
-        liveRows.map((t) => `<tr><td>${esc(t.date)}</td><td>${esc(t.symbol || "—")}</td><td class="side-${t.side.toLowerCase()}">${esc(t.side)}</td>` +
+      : "<table class=\"data\"><thead><tr><th>Date</th><th>Agent</th><th>Symbol</th><th>Side</th><th>Price</th><th>Size</th><th>Reason</th></tr></thead><tbody>" +
+        liveRows.map((t) => `<tr><td>${esc(t.date)}</td><td>${esc(t.strategy || "—")}</td><td>${esc(t.symbol || "—")}</td><td class="side-${t.side.toLowerCase()}">${esc(t.side)}</td>` +
           `<td>${fmtNum(t.price)}</td><td>${esc(t.size)}</td><td>${esc(t.reason || "")}</td></tr>`).join("") +
         "</tbody></table>";
   } else {
     dot.classList.remove("live");
     text.textContent = "no live agent — backtest mode";
-    agentPanel.style.display = "none";
+    $("#agentsWrap").innerHTML = "";
     liveTradesPanel.style.display = "none";
   }
 
-  updateMascot(status);
+  updateMascot(agentEntries.map(([strategy, status]) => ({ strategy, ...status })));
 
   if (results.available === false) {
     $("#tiles").innerHTML = `<div class="empty">${esc(results.reason)}</div>`;
