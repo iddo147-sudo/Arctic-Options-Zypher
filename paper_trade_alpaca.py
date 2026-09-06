@@ -450,4 +450,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     defaults = STRATEGIES[args.strategy]
-    run(args.strategy, args.symbols or defaults["symbols"], args.shares or defaults["shares"])
+    try:
+        run(args.strategy, args.symbols or defaults["symbols"], args.shares or defaults["shares"])
+    except Exception as e:
+        # 2026-09-06: per-ticker failures already degrade gracefully (see the try/except in
+        # run()'s loop), but a failure BEFORE that -- can't connect to Alpaca at all, account
+        # call itself fails -- would otherwise crash silently: no dashboard update, no
+        # notification, just a day quietly missing with nothing to show for it. This is the
+        # one failure mode nothing else in this file catches, so it gets its own phone ping.
+        print(f"[error] {args.strategy} run failed entirely: {e}")
+        notify_phone(
+            title=f"[{args.strategy}] Agent run FAILED",
+            message=f"Could not complete this run: {e}",
+            tags="warning",
+        )
+        raise
