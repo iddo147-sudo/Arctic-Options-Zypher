@@ -13,7 +13,8 @@ BAC/HD/COST/CAT (added via expand_universe.py, 2026-09-05). RSI: GOOGL/V/MA/GS/W
 -- the 9 (of 15 candidates NOT already claimed by Breakout) that scored positive Sharpe on
 BOTH the TRAIN and TEST windows with RSI's own validated params (rsi_period=14, oversold=30,
 exit_rsi=50 -- tuned, Sharpe 0.543 vs 0.498 default on unseen data; real but modest, nowhere
-near Breakout's 3.188).
+near Breakout's 3.188). stop_pct=0.05 added 2026-09-06 after validate_rsi_stoploss.py
+confirmed it beats no-stop on TWO separate TEST windows (the original 8's and this live 9's).
 
 Meant to be re-run on a schedule (cron/Task Scheduler), once per trading day after the close --
 NOT left running as a daemon at this stage. Each run is a fresh process, so exit logic needs
@@ -53,7 +54,11 @@ BREAKOUT_SYMBOLS = [
     "AMZN", "META", "NFLX", "AMD", "BAC", "HD", "COST", "CAT",
 ]
 RSI_SYMBOLS = ["GOOGL", "V", "MA", "GS", "WMT", "DIS", "PG", "BA", "F"]
-RSI_PARAMS = {"rsi_period": 14, "oversold": 30, "exit_rsi": 50, "max_hold_days": 10}
+# stop_pct=0.05 added 2026-09-06 after validate_rsi_stoploss.py confirmed it on BOTH the
+# original 8-ticker TEST window (Sharpe 0.625 vs 0.543 with no stop) and this live 9-ticker
+# universe's own TEST window (0.913 vs 0.874) -- a real, TRAIN-decided improvement, not a
+# TRAIN-window mirage like every entry filter tested earlier tonight.
+RSI_PARAMS = {"rsi_period": 14, "oversold": 30, "exit_rsi": 50, "max_hold_days": 10, "stop_pct": 0.05}
 
 STRATEGIES = {
     "breakout": {"symbols": BREAKOUT_SYMBOLS, "shares": Breakout.params.size},
@@ -330,20 +335,20 @@ def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates
         return {"position": shares, "close": round(today_close, 2), "rsi": rsi_value,
                 "last_action": f"BUY {shares} {symbol}", "last_order_id": result["order_id"]}
 
-    # In a position -- RSIReversion has NO stop-loss, only RSI-recovered or max_hold_days
-    # (see strategies/rsi_reversion.py) -- matching that exactly here, not adding a stop the
-    # validated strategy never had.
+    # In a position -- RSI-recovered, max_hold_days, or the validated stop-loss (see
+    # RSI_PARAMS comment above -- added 2026-09-06, confirmed on two separate TEST windows).
     entry_date_str = entry_dates.get(symbol)
     bars_held = (datetime.date.today() - datetime.date.fromisoformat(entry_date_str)).days if entry_date_str else None
     recovered = rsi_value > RSI_PARAMS["exit_rsi"]
     timed_out = bars_held is not None and bars_held >= RSI_PARAMS["max_hold_days"]
+    stopped_out = today_close <= avg_entry_price * (1 - RSI_PARAMS["stop_pct"])
 
-    if not (recovered or timed_out):
+    if not (recovered or timed_out or stopped_out):
         print(f"{symbol}: holding {current_qty} @ entry {avg_entry_price:.2f}, RSI {rsi_value} -- no exit condition met.")
         return {"position": current_qty, "close": round(today_close, 2), "rsi": rsi_value,
                 "entry_price": round(avg_entry_price, 2), "last_action": "holding position"}
 
-    reason = "RSI recovered" if recovered else "max hold days"
+    reason = "stop-loss" if stopped_out else "RSI recovered" if recovered else "max hold days"
     result = submit_exit(trading, symbol, current_qty, "rsi")
     if result is None:
         return {"position": current_qty, "close": round(today_close, 2), "rsi": rsi_value,

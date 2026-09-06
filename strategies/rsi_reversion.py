@@ -25,12 +25,20 @@ class RSIReversion(TrackedStrategy):
         max_hold_days=10,
         size=10,
         allow_short=False,
+        # 2026-09-06, "should we add a stop-loss?" -- this strategy was validated with NONE
+        # at all (pure RSI-recovery-or-timeout exit). OFF (0) by default -- a stop is
+        # double-edged on a mean-reversion strategy specifically: it protects against a stock
+        # that just keeps falling, but can also cut a trade right before the bounce it was
+        # betting on. See validate_rsi_stoploss.py for the walk-forward check before trusting
+        # any value here over the already-validated no-stop version.
+        stop_pct=0,
     )
 
     def __init__(self):
         super().__init__()
         self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
         self.entry_bar = None
+        self.entry_price = None
 
     def next(self):
         self.record()
@@ -41,13 +49,23 @@ class RSIReversion(TrackedStrategy):
             if self.rsi[0] < self.p.oversold:
                 self.order = self.buy(size=self.p.size)
                 self.entry_bar = len(self)
+                self.entry_price = self.data.close[0]
             elif self.p.allow_short and self.rsi[0] > (100 - self.p.oversold):
                 self.order = self.sell(size=self.p.size)
                 self.entry_bar = len(self)
+                self.entry_price = self.data.close[0]
             return
 
         bars_held = len(self) - self.entry_bar
         long_recovered = self.position.size > 0 and self.rsi[0] > self.p.exit_rsi
         short_recovered = self.position.size < 0 and self.rsi[0] < (100 - self.p.exit_rsi)
-        if bars_held >= self.p.max_hold_days or long_recovered or short_recovered:
+
+        stopped_out = False
+        if self.p.stop_pct:
+            if self.position.size > 0:
+                stopped_out = self.data.close[0] <= self.entry_price * (1 - self.p.stop_pct)
+            else:
+                stopped_out = self.data.close[0] >= self.entry_price * (1 + self.p.stop_pct)
+
+        if bars_held >= self.p.max_hold_days or long_recovered or short_recovered or stopped_out:
             self.order = self.close()
