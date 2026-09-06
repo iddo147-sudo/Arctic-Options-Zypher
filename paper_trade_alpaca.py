@@ -30,6 +30,7 @@ submit a live order.
 
 import argparse
 import datetime
+import threading
 import json
 import pathlib
 import os
@@ -361,6 +362,40 @@ def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates
 
 CHECK_FUNCTIONS = {"breakout": check_breakout_symbol, "rsi": check_rsi_symbol}
 
+# 2026-09-06 real incident: a manually-triggered Breakout run on Railway sat "Running" for
+# 11+ hours with no runtime logs at all (a hang, not a crash -- a crash leaves an error line,
+# a hang leaves nothing) and never reported to the dashboard. Nothing in the Alpaca SDK calls
+# (fetch_bars, get_orders, submit_order) has an explicit timeout, so one slow/unresponsive
+# request for any single ticker could block the entire run indefinitely. Bounding each
+# ticker's check with a hard timeout means one stuck network call can only ever cost this one
+# symbol (logged as an error, same as any other per-symbol exception), never the whole run.
+SYMBOL_CHECK_TIMEOUT_SECONDS = 30
+
+
+def _run_with_timeout(fn, args, timeout):
+    """A plain ThreadPoolExecutor won't do here -- concurrent.futures registers an atexit
+    hook that JOINS every worker thread at interpreter shutdown regardless of whether
+    future.result() already timed out, which would just move the hang from 'inside this
+    function' to 'at process exit' -- exactly what this exists to prevent. A daemon=True
+    thread is killed outright when the process exits, so a still-hung check can never block
+    the run from finishing and reporting."""
+    result = {}
+
+    def target():
+        try:
+            result["value"] = fn(*args)
+        except Exception as e:
+            result["error"] = e
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"timed out after {timeout}s")
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
 
 def run(strategy: str, symbols: list[str], shares: int):
     trading, data_client = get_clients()
@@ -375,7 +410,12 @@ def run(strategy: str, symbols: list[str], shares: int):
     fired = []  # (symbol, action_text, order_id) for whichever symbols actually traded this run
     for symbol in symbols:
         try:
-            tickers[symbol] = check_fn(trading, data_client, symbol, shares, entry_dates)
+            tickers[symbol] = _run_with_timeout(
+                check_fn, (trading, data_client, symbol, shares, entry_dates), SYMBOL_CHECK_TIMEOUT_SECONDS)
+        except TimeoutError as e:
+            print(f"[warn] {symbol} check {e} -- skipping this run.")
+            tickers[symbol] = {"error": str(e)}
+            continue
         except Exception as e:
             print(f"[warn] {symbol} check failed: {e}")
             tickers[symbol] = {"error": str(e)}
