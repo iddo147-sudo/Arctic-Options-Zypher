@@ -28,6 +28,7 @@ from strategies.rsi_reversion import RSIReversion
 from strategies.breakout import Breakout
 from strategies.breakdown import Breakdown
 from strategies.relief_short import ReliefShort
+from strategies.kotegawa_reversion import KotegawaReversion
 
 DATA_DIR = pathlib.Path(__file__).parent / "data"
 WEBAPP_DIR = pathlib.Path(__file__).parent / "webapp"
@@ -42,6 +43,7 @@ STRATEGIES = {
     "breakout": Breakout,
     "breakdown": Breakdown,
     "relief_short": ReliefShort,
+    "kotegawa": KotegawaReversion,
 }
 
 

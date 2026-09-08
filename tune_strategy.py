@@ -56,6 +56,11 @@ PARAM_GRIDS = {
         "exit_rsi": [35, 40, 45],
         "trend_period": [50, 100],
     },
+    "kotegawa": {
+        "dip_pct": [15, 20, 25, 30],
+        "min_volume_ratio": [1.0, 1.2, 1.5],
+        "recovery_pct": [5, 10, 15],
+    },
     "momentum": {
         "lookback": [5, 10, 20],
         "entry_threshold": [0.02, 0.04, 0.06],
