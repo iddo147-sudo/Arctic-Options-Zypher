@@ -451,10 +451,22 @@ function renderAgentPanel(strategy, status, camIndex) {
     : t.rsi != null ? "RSI " + fmtNum(t.rsi, 1)
     : "—";
 
+  // Total equity (cash + all positions, marked to market) is the REAL net-worth number --
+  // buying power is leveraged margin (~4x equity on this account), which moved around for
+  // its own reasons and got mistaken for a loss when a position was actually just up or
+  // down (2026-09-09 real user confusion). Equity is shown first, tinted by whether it's
+  // above/below the $100,000 paper starting balance, since both agents share one account.
+  const STARTING_EQUITY = 100000;
+  const equityTone = status.equity == null ? "up" : (status.equity >= STARTING_EQUITY ? "up" : "down");
+  const equityFoot = status.equity != null
+    ? (status.equity >= STARTING_EQUITY ? "+" : "") + (status.equity - STARTING_EQUITY).toLocaleString(undefined, {maximumFractionDigits: 2}) + " vs $100k start"
+    : "shared across both agents";
+
   const tiles = [
     ["Strategy", strategy, "", "up"],
     ["Last action", status.last_action || "—", status.last_order_id ? "order " + status.last_order_id.slice(0, 8) : "", "up"],
-    ["Buying power", status.buying_power != null ? "$" + Number(status.buying_power).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", "paper account", "up"],
+    ["Total equity", status.equity != null ? "$" + Number(status.equity).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", equityFoot, equityTone],
+    ["Buying power", status.buying_power != null ? "$" + Number(status.buying_power).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", "leveraged, not net worth", "up"],
   ].map(([label, value, foot, tone]) =>
     `<div class="tile"><div class="label">${esc(label)}</div>` +
     `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`

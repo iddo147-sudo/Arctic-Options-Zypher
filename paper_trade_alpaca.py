@@ -403,7 +403,13 @@ def run(strategy: str, symbols: list[str], shares: int):
 
     account = trading.get_account()
     buying_power = round(float(account.buying_power), 2)
-    print(f"[{strategy}] Connected to Alpaca paper account -- buying power ${buying_power:,.2f}")
+    # 2026-09-09, explicit user request -- "buying power" is leveraged margin (~4x this
+    # account's real value), not net worth. Real total account value (cash + all positions,
+    # marked to market) is `equity` -- surfaced separately so the dashboard can show both
+    # instead of just the leveraged number, which reads as "we lost money" when a position
+    # is simply up or down.
+    equity = round(float(account.equity), 2)
+    print(f"[{strategy}] Connected to Alpaca paper account -- buying power ${buying_power:,.2f}, equity ${equity:,.2f}")
 
     entry_dates = load_entry_dates(strategy)
     tickers = {}
@@ -436,6 +442,7 @@ def run(strategy: str, symbols: list[str], shares: int):
         # misread as the viewer's own local time, offsetting "time ago" by their UTC offset.
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "buying_power": buying_power,
+        "equity": equity,
         "last_action": summary,
         "last_order_id": fired[-1][2] if fired else None,
         "tickers": tickers,
