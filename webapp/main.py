@@ -42,6 +42,10 @@ import pathlib
 import os
 import re
 import secrets
+import threading
+import time
+import urllib.error
+import urllib.request
 
 import psycopg2
 from dotenv import load_dotenv
@@ -107,6 +111,67 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 # require_reader already takes for reads.
 AGENT_REPORT_TOKEN = os.getenv("AGENT_REPORT_TOKEN", "")
 
+# ---- brute-force protection (2026-09-09, explicit user request -- "can we make it more
+# secure") ------------------------------------------------------------------------------
+# Nothing previously stopped repeated wrong-password guesses. In-memory only (resets on a
+# redeploy) rather than a real distributed store -- proportionate to what's actually at
+# stake here (a paper-trading dashboard, no real money reachable through it), and this
+# service already redeploys often enough that "resets sometimes" is an accepted tradeoff,
+# not a real gap. Same NTFY_TOPIC as paper_trade_alpaca.py's own trade notifications --
+# reused here so a lockout event pushes to the same phone, one alert per lockout (not one
+# per failed attempt, which would just spam).
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "")
+FAILED_LOGIN_THRESHOLD = 5
+FAILED_LOGIN_WINDOW_SECONDS = 300
+LOCKOUT_SECONDS = 900
+
+_failed_attempts: dict[str, list[float]] = {}
+_lockouts: dict[str, float] = {}
+_auth_lock = threading.Lock()
+
+
+def _notify_phone(title: str, message: str):
+    if not NTFY_TOPIC:
+        return
+    req = urllib.request.Request(
+        f"https://ntfy.sh/{NTFY_TOPIC}",
+        data=message.encode("utf-8"),
+        headers={"Title": title, "Tags": "rotating_light"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except urllib.error.URLError:
+        pass  # never let a notification hiccup affect the actual auth decision
+
+
+def _is_locked_out(ip: str) -> bool:
+    with _auth_lock:
+        until = _lockouts.get(ip)
+        if until and time.time() < until:
+            return True
+        if until:  # lockout expired -- clear it and give this IP a clean slate
+            del _lockouts[ip]
+            _failed_attempts.pop(ip, None)
+        return False
+
+
+def _record_failed_attempt(ip: str):
+    now = time.time()
+    with _auth_lock:
+        attempts = [t for t in _failed_attempts.get(ip, []) if now - t < FAILED_LOGIN_WINDOW_SECONDS]
+        attempts.append(now)
+        _failed_attempts[ip] = attempts
+        newly_locked = len(attempts) >= FAILED_LOGIN_THRESHOLD and ip not in _lockouts
+        if newly_locked:
+            _lockouts[ip] = now + LOCKOUT_SECONDS
+    if newly_locked:
+        _notify_phone(
+            "Dashboard: repeated failed logins",
+            f"{len(attempts)} failed attempts from {ip} in {FAILED_LOGIN_WINDOW_SECONDS // 60} min -- "
+            f"locked out for {LOCKOUT_SECONDS // 60} min.",
+        )
+
 
 def _peer_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
@@ -120,9 +185,13 @@ def _is_loopback(ip: str) -> bool:
 
 
 def require_reader(request: Request):
-    """Loopback (local dev) is exempt; everything else needs HTTP Basic credentials."""
+    """Loopback (local dev) is exempt; everything else needs HTTP Basic credentials, and
+    now a clean recent history of not failing them repeatedly."""
     if _is_loopback(_peer_ip(request)):
         return
+    ip = _peer_ip(request)
+    if _is_locked_out(ip):
+        raise HTTPException(status_code=429, detail="too many failed attempts -- try again later")
     if not DASHBOARD_PASSWORD:
         raise HTTPException(status_code=503, detail="DASHBOARD_PASSWORD is not set -- remote access refused")
     header = request.headers.get("authorization", "")
@@ -134,6 +203,7 @@ def require_reader(request: Request):
                 return
         except Exception:
             pass
+    _record_failed_attempt(ip)
     raise HTTPException(
         status_code=401,
         detail="authentication required",
@@ -144,16 +214,36 @@ def require_reader(request: Request):
 def require_agent(request: Request):
     """Gate for the two report_* write endpoints -- a bearer token, not the dashboard's own
     HTTP Basic reader password. No loopback exemption here on purpose: even a local run
-    that happens to set DASHBOARD_URL should still have to present the real token."""
+    that happens to set DASHBOARD_URL should still have to present the real token. Shares
+    the same lockout tracker as require_reader -- one brute-force counter per IP, not two
+    separate ones an attacker could juggle between."""
+    ip = _peer_ip(request)
+    if _is_locked_out(ip):
+        raise HTTPException(status_code=429, detail="too many failed attempts -- try again later")
     if not AGENT_REPORT_TOKEN:
         raise HTTPException(status_code=503, detail="AGENT_REPORT_TOKEN is not set -- agent reports refused")
     header = request.headers.get("authorization", "")
     if header != f"Bearer {AGENT_REPORT_TOKEN}":
+        _record_failed_attempt(ip)
         raise HTTPException(status_code=401, detail="invalid or missing agent token")
 
 
 app = FastAPI(title="Futures Bot Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Cheap, standard hardening -- 2026-09-09, "can we make it more secure." None of this
+    replaces real auth, it just closes off unrelated browser-level attack classes
+    (clickjacking via iframe embedding, MIME-sniffing, leaking the URL/password-bearing
+    referrer to another site) for near-zero cost."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
 
 
 @app.get("/", dependencies=[Depends(require_reader)])
