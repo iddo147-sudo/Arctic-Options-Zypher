@@ -58,6 +58,7 @@ load_dotenv()
 BASE_DIR = pathlib.Path(__file__).parent
 RESULTS_PATH = BASE_DIR / "results.json"
 TRADES_PATH = BASE_DIR / "agent_trades.json"  # local-dev fallback only when DATABASE_URL is unset
+KILL_SWITCH_PATH = BASE_DIR / "kill_switch_state.json"  # local-dev fallback only when DATABASE_URL is unset
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -86,8 +87,25 @@ def _ensure_trades_table():
         conn.commit()
 
 
+def _ensure_kill_switch_table():
+    if not DATABASE_URL:
+        return
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS kill_switch (
+                id TEXT PRIMARY KEY,
+                tripped BOOLEAN NOT NULL DEFAULT FALSE,
+                tripped_at TIMESTAMPTZ,
+                equity_at_trip NUMERIC,
+                reason TEXT
+            )
+        """)
+        conn.commit()
+
+
 try:
     _ensure_trades_table()
+    _ensure_kill_switch_table()
 except psycopg2.Error as e:
     # Don't take down the whole dashboard over a DB hiccup at startup -- a real connectivity
     # problem will surface again (and print again) on the next actual read/write attempt.
@@ -328,4 +346,94 @@ async def report_trade(request: Request):
     trades = json.loads(TRADES_PATH.read_text()) if TRADES_PATH.exists() else []
     trades.append(trade)
     TRADES_PATH.write_text(json.dumps(trades, indent=2))
+    return {"ok": True}
+
+
+# ---- kill switch (2026-09-10, explicit user request -- "destroy him if he loses all 100k")
+# ------------------------------------------------------------------------------------------
+# Account-wide (Breakout and RSI share one Alpaca paper account, so one equity floor covers
+# both), and DELIBERATELY does not auto-resume when equity recovers: tripping requires a
+# human to look at why before trading resumes, not a silent bounce-back. That's why trip
+# uses require_agent (the bot reports it tripped) but reset uses require_reader (only a
+# human with the dashboard password can clear it) -- see chat: the whole point of a kill
+# switch that "makes things better" is forcing review, not letting the bot quietly restart.
+
+
+def _kill_switch_state() -> dict:
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute("SELECT tripped, tripped_at, equity_at_trip, reason FROM kill_switch WHERE id = 'global'")
+                row = cur.fetchone()
+            if row:
+                return {"tripped": row[0], "tripped_at": row[1].isoformat() if row[1] else None,
+                        "equity_at_trip": float(row[2]) if row[2] is not None else None, "reason": row[3]}
+            return {"tripped": False}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres read failed, falling back to local file: {e}")
+
+    if not KILL_SWITCH_PATH.exists():
+        return {"tripped": False}
+    return json.loads(KILL_SWITCH_PATH.read_text())
+
+
+@app.get("/api/kill_switch", dependencies=[Depends(require_agent)])
+def kill_switch_status():
+    """The agent's own read path, checked at the start of every run before trading -- gated
+    by require_agent (bearer token), not require_reader, since this is agent-to-server
+    traffic, not a human viewing the dashboard."""
+    return _kill_switch_state()
+
+
+@app.post("/api/kill_switch/trip", dependencies=[Depends(require_agent)])
+async def trip_kill_switch(request: Request):
+    """Idempotent -- if it's already tripped, this just confirms that rather than overwriting
+    the original tripped_at/reason with whatever run happens to call it next."""
+    body = await request.json()
+    state = _kill_switch_state()
+    if state.get("tripped"):
+        return {"ok": True, "already_tripped": True}
+
+    equity = body.get("equity")
+    reason = body.get("reason", "equity floor breached")
+    _notify_phone("KILL SWITCH TRIPPED", f"{reason} -- trading halted until manually reviewed and reset.")
+
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO kill_switch (id, tripped, tripped_at, equity_at_trip, reason) "
+                    "VALUES ('global', TRUE, now(), %s, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET tripped = TRUE, tripped_at = now(), "
+                    "equity_at_trip = EXCLUDED.equity_at_trip, reason = EXCLUDED.reason "
+                    "WHERE kill_switch.tripped = FALSE",
+                    (equity, reason),
+                )
+                conn.commit()
+            return {"ok": True, "already_tripped": False}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
+    import datetime as _dt
+    KILL_SWITCH_PATH.write_text(json.dumps({
+        "tripped": True, "tripped_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "equity_at_trip": equity, "reason": reason,
+    }, indent=2))
+    return {"ok": True, "already_tripped": False}
+
+
+@app.post("/api/kill_switch/reset", dependencies=[Depends(require_reader)])
+def reset_kill_switch():
+    """Human-only (dashboard password), by design -- see module note above this section."""
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute("DELETE FROM kill_switch WHERE id = 'global'")
+                conn.commit()
+            return {"ok": True}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
+    if KILL_SWITCH_PATH.exists():
+        KILL_SWITCH_PATH.unlink()
     return {"ok": True}

@@ -1,9 +1,12 @@
 venv/
 data/*.csv
+data_intraday/*.csv
 logs/
+*.log
 __pycache__/
 *.pyc
 .env
 webapp/agent_status*.json
 webapp/agent_trades.json
 webapp/agent_position_state*.json
+webapp/kill_switch_state.json

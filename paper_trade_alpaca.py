@@ -114,6 +114,60 @@ def notify_phone(title: str, message: str, tags: str = "moneybag"):
         print(f"[warn] failed to send phone notification: {e}")
 
 
+def _get(path: str) -> dict | None:
+    """GET counterpart to _report()'s POST -- same auth, same 'never let a network hiccup
+    take down the actual run' stance, just returning the parsed body instead of firing and
+    forgetting."""
+    if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
+        return None
+    req = urllib.request.Request(
+        f"{DASHBOARD_URL}{path}",
+        headers={"Authorization": f"Bearer {AGENT_REPORT_TOKEN}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except (urllib.error.URLError, json.JSONDecodeError) as e:
+        print(f"[warn] failed to read from dashboard at {DASHBOARD_URL}: {e}")
+        return None
+
+
+# Kill switch (2026-09-10, explicit user request -- "plant an algorithm that will destroy
+# him if he loses all 100k"): both strategies trade through the SAME Alpaca paper account, so
+# this is one account-wide equity floor, not per-strategy. Deliberately does NOT auto-resume
+# once tripped -- see webapp/main.py's kill-switch section for why (forcing a human review
+# beats a silent restart, which was the actual answer to "can it push them towards being
+# better" -- it can't learn on its own safely, but a mandatory review after a real loss can).
+KILL_SWITCH_FLOOR_PCT = float(os.environ.get("KILL_SWITCH_FLOOR_PCT", "0.75"))
+STARTING_EQUITY = float(os.environ.get("STARTING_EQUITY", "100000"))
+
+
+def check_kill_switch(equity: float) -> tuple[bool, str | None]:
+    """Returns (halted, reason). Existing open positions are left alone on purpose -- this
+    blocks NEW entries only (see the halted checks in check_breakout_symbol/
+    check_rsi_symbol); force-liquidating everything the moment this trips could itself lock
+    in a loss at the worst possible instant, which isn't obviously safer."""
+    if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
+        # No dashboard configured (local dev) -- nothing to persist across runs, but still
+        # refuse to trade THIS run if equity's already under the floor.
+        if equity < STARTING_EQUITY * KILL_SWITCH_FLOOR_PCT:
+            return True, f"equity ${equity:,.2f} below floor (local run, not persisted)"
+        return False, None
+
+    state = _get("/api/kill_switch") or {"tripped": False}
+    if state.get("tripped"):
+        return True, state.get("reason") or "kill switch already tripped"
+
+    if equity < STARTING_EQUITY * KILL_SWITCH_FLOOR_PCT:
+        reason = (f"equity ${equity:,.2f} fell below {KILL_SWITCH_FLOOR_PCT:.0%} of the "
+                  f"${STARTING_EQUITY:,.0f} starting balance")
+        _report("/api/kill_switch/trip", {"equity": equity, "reason": reason})
+        notify_phone("KILL SWITCH TRIPPED -- trading halted", reason, tags="rotating_light")
+        return True, reason
+
+    return False, None
+
+
 def _report(path: str, payload: dict):
     if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
         return
@@ -213,7 +267,8 @@ def submit_exit(trading, symbol, qty, strategy) -> dict | None:
     return {"order_id": str(submitted.id)}
 
 
-def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_dates: dict) -> dict:
+def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_dates: dict,
+                           halted: bool = False) -> dict:
     p = Breakout.params
     lookback_days = max(p.trend_period, p.breakout_period) * 2  # generous buffer for weekends/holidays
     bars = fetch_bars(data_client, symbol, lookback_days)
@@ -240,6 +295,10 @@ def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_
 
     if current_qty == 0:
         entry_dates.pop(symbol, None)  # flat -- any stale entry_date no longer applies
+        if halted:
+            print(f"{symbol}: kill switch active -- no new entries.")
+            return {"position": 0, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
+                    "highest": round(highest, 2), "last_action": "holding flat (kill switch active)"}
         in_uptrend = today_close > trend_ma
         broke_out = today_close > highest
         if not (in_uptrend and broke_out):
@@ -299,7 +358,8 @@ def _compute_rsi(closes) -> float:
     return 100 - (100 / (1 + rs))
 
 
-def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates: dict) -> dict:
+def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates: dict,
+                      halted: bool = False) -> dict:
     period = RSI_PARAMS["rsi_period"]
     lookback_days = period * 6  # generous buffer for Wilder smoothing to converge + weekends/holidays
     bars = fetch_bars(data_client, symbol, lookback_days)
@@ -322,6 +382,10 @@ def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates
 
     if current_qty == 0:
         entry_dates.pop(symbol, None)
+        if halted:
+            print(f"{symbol}: kill switch active -- no new entries.")
+            return {"position": 0, "close": round(today_close, 2), "rsi": rsi_value,
+                    "last_action": "holding flat (kill switch active)"}
         if rsi_value >= RSI_PARAMS["oversold"]:
             print(f"{symbol}: no entry -- RSI {rsi_value} not oversold. Holding flat.")
             return {"position": 0, "close": round(today_close, 2), "rsi": rsi_value,
@@ -411,13 +475,18 @@ def run(strategy: str, symbols: list[str], shares: int):
     equity = round(float(account.equity), 2)
     print(f"[{strategy}] Connected to Alpaca paper account -- buying power ${buying_power:,.2f}, equity ${equity:,.2f}")
 
+    halted, halt_reason = check_kill_switch(equity)
+    if halted:
+        print(f"[{strategy}] KILL SWITCH ACTIVE -- {halt_reason}. No new entries this run "
+              f"(existing positions still monitored for exits).")
+
     entry_dates = load_entry_dates(strategy)
     tickers = {}
     fired = []  # (symbol, action_text, order_id) for whichever symbols actually traded this run
     for symbol in symbols:
         try:
             tickers[symbol] = _run_with_timeout(
-                check_fn, (trading, data_client, symbol, shares, entry_dates), SYMBOL_CHECK_TIMEOUT_SECONDS)
+                check_fn, (trading, data_client, symbol, shares, entry_dates, halted), SYMBOL_CHECK_TIMEOUT_SECONDS)
         except TimeoutError as e:
             print(f"[warn] {symbol} check {e} -- skipping this run.")
             tickers[symbol] = {"error": str(e)}
@@ -443,6 +512,8 @@ def run(strategy: str, symbols: list[str], shares: int):
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "buying_power": buying_power,
         "equity": equity,
+        "kill_switch_active": halted,
+        "kill_switch_reason": halt_reason,
         "last_action": summary,
         "last_order_id": fired[-1][2] if fired else None,
         "tickers": tickers,
