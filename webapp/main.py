@@ -59,6 +59,7 @@ BASE_DIR = pathlib.Path(__file__).parent
 RESULTS_PATH = BASE_DIR / "results.json"
 TRADES_PATH = BASE_DIR / "agent_trades.json"  # local-dev fallback only when DATABASE_URL is unset
 KILL_SWITCH_PATH = BASE_DIR / "kill_switch_state.json"  # local-dev fallback only when DATABASE_URL is unset
+REVALIDATION_PATH = BASE_DIR / "revalidation_runs.json"  # local-dev fallback only when DATABASE_URL is unset
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -87,6 +88,26 @@ def _ensure_trades_table():
         conn.commit()
 
 
+def _ensure_revalidation_table():
+    if not DATABASE_URL:
+        return
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS revalidation_runs (
+                id SERIAL PRIMARY KEY,
+                strategy TEXT,
+                window_start TEXT,
+                window_end TEXT,
+                counted INTEGER,
+                beat_bh_count INTEGER,
+                avg_sharpe NUMERIC,
+                decay_flag BOOLEAN,
+                reported_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        conn.commit()
+
+
 def _ensure_kill_switch_table():
     if not DATABASE_URL:
         return
@@ -106,6 +127,7 @@ def _ensure_kill_switch_table():
 try:
     _ensure_trades_table()
     _ensure_kill_switch_table()
+    _ensure_revalidation_table()
 except psycopg2.Error as e:
     # Don't take down the whole dashboard over a DB hiccup at startup -- a real connectivity
     # problem will surface again (and print again) on the next actual read/write attempt.
@@ -437,3 +459,63 @@ def reset_kill_switch():
     if KILL_SWITCH_PATH.exists():
         KILL_SWITCH_PATH.unlink()
     return {"ok": True}
+
+
+# ---- quarterly re-validation (2026-09-11, "can we make them learn and improve") ----------
+# Stores the history of revalidate_strategies.py's runs so the dashboard can eventually show
+# a trend over time, not just the latest pass/fail. Reporting only, same as report_trade --
+# nothing here changes what's live; a decay flag is for a human to act on.
+
+
+@app.post("/api/report_revalidation", dependencies=[Depends(require_agent)])
+async def report_revalidation(request: Request):
+    audit = await request.json()
+    row = {
+        "strategy": audit.get("strategy"), "window_start": (audit.get("window") or [None, None])[0],
+        "window_end": (audit.get("window") or [None, None])[1], "counted": audit.get("counted"),
+        "beat_bh_count": audit.get("beat_bh_count"), "avg_sharpe": audit.get("avg_sharpe"),
+        "decay_flag": audit.get("decay_flag"),
+    }
+
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO revalidation_runs (strategy, window_start, window_end, counted, "
+                    "beat_bh_count, avg_sharpe, decay_flag) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (row["strategy"], row["window_start"], row["window_end"], row["counted"],
+                     row["beat_bh_count"], row["avg_sharpe"], row["decay_flag"]),
+                )
+                conn.commit()
+            return {"ok": True}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
+    runs = json.loads(REVALIDATION_PATH.read_text()) if REVALIDATION_PATH.exists() else []
+    runs.append(row)
+    REVALIDATION_PATH.write_text(json.dumps(runs, indent=2))
+    return {"ok": True}
+
+
+@app.get("/api/revalidation", dependencies=[Depends(require_reader)])
+def revalidation_history():
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT strategy, window_start, window_end, counted, beat_bh_count, avg_sharpe, "
+                    "decay_flag, reported_at FROM revalidation_runs ORDER BY id DESC LIMIT 50"
+                )
+                rows = cur.fetchall()
+            return [
+                {"strategy": r[0], "window_start": r[1], "window_end": r[2], "counted": r[3],
+                 "beat_bh_count": r[4], "avg_sharpe": float(r[5]) if r[5] is not None else None,
+                 "decay_flag": r[6], "reported_at": r[7].isoformat() if r[7] else None}
+                for r in rows
+            ]
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres read failed, falling back to local file: {e}")
+
+    if not REVALIDATION_PATH.exists():
+        return []
+    return json.loads(REVALIDATION_PATH.read_text())
