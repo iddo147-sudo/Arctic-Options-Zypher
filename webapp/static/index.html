@@ -303,6 +303,12 @@ table.config td.param-value { color: var(--ink); font-weight: 600; }
     <div id="settingsWrap"></div>
   </section>
 
+  <section class="panel" id="revalidationPanel" style="display:none">
+    <h2>Quarterly re-validation</h2>
+    <p class="hint">revalidate_strategies.py re-checks each live strategy's fixed, already-validated params against the most recent ~90 days of real data -- same params, same tickers, nothing re-tuned. A flag here means "worth a human look," not "auto-adjusted" -- nothing changes what's live on its own.</p>
+    <div id="revalidationWrap"></div>
+  </section>
+
   <section class="panel">
     <h2>Equity curve</h2>
     <p class="hint">Portfolio value over the backtest window. Flat stretches are the strategy sitting out; the point of this project is not trusting the slope until it's proven against unseen data.</p>
@@ -586,13 +592,52 @@ function renderConfigPanel(agentEntries) {
   }).join("");
 }
 
+// ---- quarterly re-validation panel -----------------------------------------------------
+// /api/revalidation returns runs newest-first, so the first entry seen per strategy while
+// walking the list IS that strategy's latest run -- no separate sort/group step needed.
+function renderRevalidationPanel(runs) {
+  if (!runs.length) return { html: "", hasData: false };
+
+  const latestByStrategy = new Map();
+  for (const r of runs) {
+    if (!latestByStrategy.has(r.strategy)) latestByStrategy.set(r.strategy, r);
+  }
+
+  const tiles = Array.from(latestByStrategy.entries()).map(([strategy, r]) => {
+    const tone = r.decay_flag ? "down" : "up";
+    const status = r.decay_flag ? "DECAY FLAGGED" : "OK";
+    const beatText = r.counted ? `${r.beat_bh_count}/${r.counted} beat buy&hold` : "no usable data";
+    return `<div class="tile"><div class="label">${esc(strategy)}</div>` +
+      `<div class="value ${tone}">${esc(status)}</div>` +
+      `<div class="foot">${esc(beatText)} · avg Sharpe ${r.avg_sharpe != null ? fmtNum(r.avg_sharpe, 3) : "—"}` +
+      (r.reported_at ? ` · <span data-since="${esc(r.reported_at)}">${relTime(r.reported_at)}</span>` : "") +
+      `</div></div>`;
+  }).join("");
+
+  const historyRows = runs.slice(0, 12).map((r) =>
+    `<tr><td>${r.reported_at ? esc(r.reported_at.slice(0, 10)) : "—"}</td><td>${esc(r.strategy)}</td>` +
+    `<td>${esc(r.window_start || "—")} → ${esc(r.window_end || "—")}</td>` +
+    `<td>${r.counted ? r.beat_bh_count + "/" + r.counted : "—"}</td>` +
+    `<td>${r.avg_sharpe != null ? fmtNum(r.avg_sharpe, 3) : "—"}</td>` +
+    `<td class="${r.decay_flag ? "side-sell" : "side-buy"}">${r.decay_flag ? "FLAGGED" : "OK"}</td></tr>`
+  ).join("");
+
+  return {
+    hasData: true,
+    html: `<div class="tiles">${tiles}</div>` +
+      `<table class="data" style="margin-top:16px"><thead><tr><th>Date</th><th>Strategy</th><th>Window</th>` +
+      `<th>Beat B&amp;H</th><th>Avg Sharpe</th><th>Result</th></tr></thead><tbody>${historyRows}</tbody></table>`,
+  };
+}
+
 async function load() {
-  let results, agentsData, liveTrades;
+  let results, agentsData, liveTrades, revalidationRuns;
   try {
-    [results, agentsData, liveTrades] = await Promise.all([
+    [results, agentsData, liveTrades, revalidationRuns] = await Promise.all([
       fetch("/api/results").then((r) => r.json()),
       fetch("/api/agents").then((r) => r.json()),
       fetch("/api/live_trades").then((r) => r.json()),
+      fetch("/api/revalidation").then((r) => r.json()).catch(() => []),
     ]);
   } catch (e) {
     $("#agentText").textContent = "dashboard API unreachable";
@@ -603,7 +648,14 @@ async function load() {
   const liveTradesPanel = $("#liveTradesPanel");
   const resultsOverTimePanel = $("#resultsOverTimePanel");
   const settingsPanel = $("#settingsPanel");
+  const revalidationPanel = $("#revalidationPanel");
   const agentEntries = Object.entries(agentsData || {}).filter(([, s]) => s.connected);
+
+  // Independent of whether an agent is currently connected -- this is historical audit
+  // data, useful to see even if the live agent process happens to be between runs.
+  const revalidation = renderRevalidationPanel(revalidationRuns || []);
+  revalidationPanel.style.display = revalidation.hasData ? "" : "none";
+  if (revalidation.hasData) $("#revalidationWrap").innerHTML = revalidation.html;
 
   if (agentEntries.length) {
     dot.classList.add("live");

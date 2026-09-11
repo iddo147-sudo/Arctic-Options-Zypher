@@ -470,11 +470,15 @@ def reset_kill_switch():
 @app.post("/api/report_revalidation", dependencies=[Depends(require_agent)])
 async def report_revalidation(request: Request):
     audit = await request.json()
+    import datetime as _dt
     row = {
         "strategy": audit.get("strategy"), "window_start": (audit.get("window") or [None, None])[0],
         "window_end": (audit.get("window") or [None, None])[1], "counted": audit.get("counted"),
         "beat_bh_count": audit.get("beat_bh_count"), "avg_sharpe": audit.get("avg_sharpe"),
         "decay_flag": audit.get("decay_flag"),
+        # Postgres fills this via DEFAULT now() -- set it explicitly here too so the local-file
+        # fallback path returns the same shape either way, not a row missing this field.
+        "reported_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
     }
 
     if DATABASE_URL:
