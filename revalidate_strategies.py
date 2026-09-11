@@ -73,20 +73,25 @@ def audit_strategy(strategy: str, symbols: list[str], params: dict, shares: int,
             print(f"  [skipped] {ticker}: not enough bars inside the audit window itself")
             continue
 
-        base_value = window_equity["value"].iloc[0]
-        end_value = window_equity["value"].iloc[-1]
+        # Cast every pandas/numpy scalar to a native Python type the moment it comes out of a
+        # DataFrame -- numpy's own bool (and in numpy 2.x, its scalar class is even NAMED
+        # "bool", despite not being Python's actual bool) breaks json.dumps() with a
+        # confusing "Object of type bool is not JSON serializable" error, which is exactly
+        # the crash this caused on Railway's first real run of this script.
+        base_value = float(window_equity["value"].iloc[0])
+        end_value = float(window_equity["value"].iloc[-1])
         return_pct = round(100 * (end_value / base_value - 1), 2)
 
         daily_returns = window_equity["value"].pct_change().dropna()
-        sharpe = (round(daily_returns.mean() / daily_returns.std() * (252 ** 0.5), 3)
+        sharpe = (float(round(daily_returns.mean() / daily_returns.std() * (252 ** 0.5), 3))
                   if len(daily_returns) > 1 and daily_returns.std() > 0 else None)
 
         prices = pd.DataFrame(result.price_series)
         prices["date"] = pd.to_datetime(prices["date"])
         window_prices = prices[prices["date"] >= start]
-        bh = round(100 * (window_prices["close"].iloc[-1] / window_prices["close"].iloc[0] - 1), 2)
+        bh = round(100 * (float(window_prices["close"].iloc[-1]) / float(window_prices["close"].iloc[0]) - 1), 2)
 
-        results.append({"ticker": ticker, "return_pct": return_pct, "sharpe": sharpe, "beat_bh": return_pct > bh})
+        results.append({"ticker": ticker, "return_pct": return_pct, "sharpe": sharpe, "beat_bh": bool(return_pct > bh)})
         print(f"  {ticker:6s} return={return_pct}%  sharpe={sharpe}  "
               f"b&h={bh}%  {'BEAT' if return_pct > bh else 'lost to'} b&h")
 
@@ -100,7 +105,7 @@ def audit_strategy(strategy: str, symbols: list[str], params: dict, shares: int,
 
     # Same reject bar used to screen every candidate strategy this project has ever tested --
     # applied here to an ALREADY-LIVE strategy instead of a new one, to catch decay early.
-    decay_flag = beat_count == 0 or (avg_sharpe is not None and avg_sharpe <= 0)
+    decay_flag = bool(beat_count == 0 or (avg_sharpe is not None and avg_sharpe <= 0))
 
     return {
         "strategy": strategy, "window": [start, end], "counted": len(results),
