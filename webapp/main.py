@@ -333,6 +333,32 @@ def live_trades():
     return json.loads(TRADES_PATH.read_text())
 
 
+@app.delete("/api/live_trades/test_data", dependencies=[Depends(require_reader)])
+def delete_test_trades():
+    """One-off cleanup for a diagnostic/test row (symbol=TEST) that ended up written into
+    the real trade log during earlier development -- deliberately narrow (matches ONLY that
+    exact symbol) rather than a general delete-any-trade-by-id endpoint, so this can never be
+    used to alter or remove a real trade record. Human-only (require_reader), since this
+    mutates live trade history."""
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute("DELETE FROM trades WHERE symbol = 'TEST'")
+                deleted = cur.rowcount
+                conn.commit()
+            return {"ok": True, "deleted": deleted}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres delete failed: {e}")
+            raise HTTPException(status_code=500, detail="delete failed")
+
+    if not TRADES_PATH.exists():
+        return {"ok": True, "deleted": 0}
+    trades = json.loads(TRADES_PATH.read_text())
+    remaining = [t for t in trades if t.get("symbol") != "TEST"]
+    TRADES_PATH.write_text(json.dumps(remaining, indent=2))
+    return {"ok": True, "deleted": len(trades) - len(remaining)}
+
+
 @app.post("/api/report_status/{strategy}", dependencies=[Depends(require_agent)])
 async def report_status(strategy: str, request: Request):
     """paper_trade_alpaca.py's HTTP path for one agent's status update -- see module
