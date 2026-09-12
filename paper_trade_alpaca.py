@@ -63,6 +63,9 @@ RSI_PARAMS = {"rsi_period": 14, "oversold": 30, "exit_rsi": 50, "max_hold_days":
 
 STRATEGIES = {
     "breakout": {"symbols": BREAKOUT_SYMBOLS, "shares": Breakout.params.size},
+    # "shares" here is vestigial for rsi (2026-09-12) -- kept only because run() still takes
+    # a shares arg uniformly for both strategies; RSI's actual entry size is now computed
+    # dynamically in run() by splitting available cash across the run's real entries.
     "rsi": {"symbols": RSI_SYMBOLS, "shares": 10},
 }
 
@@ -391,14 +394,15 @@ def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates
             return {"position": 0, "close": round(today_close, 2), "rsi": rsi_value,
                     "last_action": f"holding flat (RSI {rsi_value}, not oversold)"}
 
-        result = submit_entry(trading, symbol, shares, "rsi", "oversold bounce")
-        if result is None:
-            return {"position": 0, "close": round(today_close, 2), "rsi": rsi_value,
-                    "last_action": "oversold confirmed, order already pending"}
-        entry_dates[symbol] = datetime.date.today().isoformat()
-        log_live_trade("rsi", symbol, "BUY", today_close, shares, "oversold bounce")
-        return {"position": shares, "close": round(today_close, 2), "rsi": rsi_value,
-                "last_action": f"BUY {shares} {symbol}", "last_order_id": result["order_id"]}
+        # Sizing is deferred to run() -- 2026-09-12, validated on both TRAIN and TEST that
+        # splitting AVAILABLE CASH across however many symbols enter this same run beats a
+        # flat share count (RSI sits idle ~69% of the time, so flat sizing left most of its
+        # capital unused even when a real signal fired). Can't size correctly here without
+        # knowing how many OTHER symbols in this run also want to enter -- that count isn't
+        # known until every symbol's been checked once.
+        print(f"{symbol}: RSI {rsi_value} oversold -- entry pending (sized after full scan).")
+        return {"position": 0, "close": round(today_close, 2), "rsi": rsi_value,
+                "_pending_entry": True, "last_action": "oversold confirmed, sizing pending"}
 
     # In a position -- RSI-recovered, max_hold_days, or the validated stop-loss (see
     # RSI_PARAMS comment above -- added 2026-09-06, confirmed on two separate TEST windows).
@@ -466,6 +470,7 @@ def run(strategy: str, symbols: list[str], shares: int):
     check_fn = CHECK_FUNCTIONS[strategy]
 
     account = trading.get_account()
+    cash = float(account.cash)
     buying_power = round(float(account.buying_power), 2)
     # 2026-09-09, explicit user request -- "buying power" is leveraged margin (~4x this
     # account's real value), not net worth. Real total account value (cash + all positions,
@@ -498,6 +503,33 @@ def run(strategy: str, symbols: list[str], shares: int):
         if tickers[symbol].get("last_order_id"):
             fired.append((symbol, tickers[symbol]["last_action"], tickers[symbol]["last_order_id"]))
 
+    if strategy == "rsi":
+        pending = [s for s in symbols if tickers.get(s, {}).get("_pending_entry")]
+        if pending:
+            # Validated 2026-09-12 (both TRAIN and TEST): split ACTUAL AVAILABLE CASH across
+            # however many symbols signaled entry this run, instead of a flat share count --
+            # RSI is idle most of the time, so a flat size left most of its capital unused
+            # exactly when a real signal fired. Uses account.cash (unlevered), not
+            # buying_power (~4x leveraged), so this never sizes into margin.
+            per_entry_dollars = cash / len(pending)
+            for symbol in pending:
+                close = tickers[symbol]["close"]
+                entry_shares = int(per_entry_dollars // close)
+                if entry_shares < 1:
+                    tickers[symbol] = {**tickers[symbol], "last_action": "oversold, but cash-split size rounds to 0 shares"}
+                    tickers[symbol].pop("_pending_entry", None)
+                    continue
+                result = submit_entry(trading, symbol, entry_shares, "rsi", "oversold bounce")
+                if result is None:
+                    tickers[symbol] = {**tickers[symbol], "last_action": "oversold confirmed, order already pending"}
+                else:
+                    entry_dates[symbol] = datetime.date.today().isoformat()
+                    log_live_trade("rsi", symbol, "BUY", close, entry_shares, "oversold bounce")
+                    tickers[symbol] = {**tickers[symbol], "position": entry_shares,
+                                        "last_action": f"BUY {entry_shares} {symbol}", "last_order_id": result["order_id"]}
+                    fired.append((symbol, tickers[symbol]["last_action"], result["order_id"]))
+                tickers[symbol].pop("_pending_entry", None)
+
     position_state_path(strategy).write_text(json.dumps(entry_dates, indent=2))
 
     summary = "; ".join(text for _, text, _ in fired) if fired else f"checked {len(symbols)} tickers -- no setups"
@@ -526,7 +558,9 @@ def run(strategy: str, symbols: list[str], shares: int):
                 "stop_pct": Breakout.params.stop_pct, "target_pct": Breakout.params.target_pct,
                 "max_hold_days": Breakout.params.max_hold_days, "shares": shares, "universe_size": len(symbols),
             },
-            "rsi": {**RSI_PARAMS, "shares": shares, "universe_size": len(symbols)},
+            # "shares" dropped for rsi (2026-09-12) -- sizing is now dynamic (cash split
+            # across this run's actual entries, see run()), not a fixed count.
+            "rsi": {**RSI_PARAMS, "sizing": "cash-split across same-run entries", "universe_size": len(symbols)},
         }[strategy],
     }
     status_path(strategy).parent.mkdir(exist_ok=True)
