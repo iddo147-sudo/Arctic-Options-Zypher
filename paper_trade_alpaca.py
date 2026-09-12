@@ -39,7 +39,7 @@ import urllib.request
 
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.requests import LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -245,7 +245,18 @@ def fetch_bars(data_client, symbol: str, lookback_days: int):
     return data_client.get_stock_bars(bars_request).df
 
 
-def submit_entry(trading, symbol, shares, strategy, side_reason) -> dict | None:
+
+# 2026-09-12 -- limit instead of market orders. This runs after the close (see module
+# docstring), so a market order sits queued until the next open and fills at WHATEVER that
+# gap turns out to be -- a limit order caps the worst price we'll accept. Not backtestable
+# (none of the cached daily bars have bid/ask spread data, so a backtest can't show a real
+# slippage number either way) -- this is a no-downside execution-quality change, not a
+# strategy change: 0.5% is tight enough to fill almost every real trading day, and on the
+# rare day it doesn't fill, that's a trade correctly skipped rather than chased at a bad price.
+LIMIT_ORDER_BUFFER_PCT = 0.005
+
+
+def submit_entry(trading, symbol, shares, strategy, side_reason, reference_price) -> dict | None:
     """Shared entry-order guard: skip if an order for this symbol is already pending
     (2026-09-05 real incident -- a market order placed while the market's closed sits
     ACCEPTED for hours; re-running before it fills would otherwise submit a duplicate)."""
@@ -253,20 +264,24 @@ def submit_entry(trading, symbol, shares, strategy, side_reason) -> dict | None:
     if open_orders:
         print(f"{symbol}: entry confirmed but an order is already pending (id {open_orders[0].id}) -- not submitting another.")
         return None
-    order = MarketOrderRequest(symbol=symbol, qty=shares, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+    limit_price = round(reference_price * (1 + LIMIT_ORDER_BUFFER_PCT), 2)
+    order = LimitOrderRequest(symbol=symbol, qty=shares, side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+                               limit_price=limit_price)
     submitted = trading.submit_order(order)
-    print(f"Submitted BUY {shares} {symbol} -- order id {submitted.id}")
+    print(f"Submitted BUY {shares} {symbol} @ limit {limit_price} -- order id {submitted.id}")
     return {"order_id": str(submitted.id)}
 
 
-def submit_exit(trading, symbol, qty, strategy) -> dict | None:
+def submit_exit(trading, symbol, qty, strategy, reference_price) -> dict | None:
     open_orders = trading.get_orders(GetOrdersRequest(symbols=[symbol], status=QueryOrderStatus.OPEN))
     if open_orders:
         print(f"{symbol}: exit condition met but an order is already pending (id {open_orders[0].id}) -- not submitting another.")
         return None
-    order = MarketOrderRequest(symbol=symbol, qty=abs(qty), side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
+    limit_price = round(reference_price * (1 - LIMIT_ORDER_BUFFER_PCT), 2)
+    order = LimitOrderRequest(symbol=symbol, qty=abs(qty), side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                               limit_price=limit_price)
     submitted = trading.submit_order(order)
-    print(f"Submitted SELL {abs(qty)} {symbol} -- order id {submitted.id}")
+    print(f"Submitted SELL {abs(qty)} {symbol} @ limit {limit_price} -- order id {submitted.id}")
     return {"order_id": str(submitted.id)}
 
 
@@ -310,7 +325,7 @@ def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_
             return {"position": 0, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
                     "highest": round(highest, 2), "last_action": f"holding flat ({reason})"}
 
-        result = submit_entry(trading, symbol, shares, "breakout", "trend breakout")
+        result = submit_entry(trading, symbol, shares, "breakout", "trend breakout", today_close)
         if result is None:
             return {"position": 0, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
                     "highest": round(highest, 2), "last_action": "breakout confirmed, order already pending"}
@@ -335,7 +350,7 @@ def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_
                 "entry_price": round(avg_entry_price, 2), "last_action": "holding position"}
 
     reason = "stop-loss" if stopped_out else "profit target" if hit_target else "max hold days"
-    result = submit_exit(trading, symbol, current_qty, "breakout")
+    result = submit_exit(trading, symbol, current_qty, "breakout", today_close)
     if result is None:
         return {"position": current_qty, "close": round(today_close, 2), "entry_price": round(avg_entry_price, 2),
                 "last_action": f"exit ({reason}) pending, order already in flight"}
@@ -418,7 +433,7 @@ def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates
                 "entry_price": round(avg_entry_price, 2), "last_action": "holding position"}
 
     reason = "stop-loss" if stopped_out else "RSI recovered" if recovered else "max hold days"
-    result = submit_exit(trading, symbol, current_qty, "rsi")
+    result = submit_exit(trading, symbol, current_qty, "rsi", today_close)
     if result is None:
         return {"position": current_qty, "close": round(today_close, 2), "rsi": rsi_value,
                 "entry_price": round(avg_entry_price, 2), "last_action": f"exit ({reason}) pending, order already in flight"}
@@ -519,7 +534,7 @@ def run(strategy: str, symbols: list[str], shares: int):
                     tickers[symbol] = {**tickers[symbol], "last_action": "oversold, but cash-split size rounds to 0 shares"}
                     tickers[symbol].pop("_pending_entry", None)
                     continue
-                result = submit_entry(trading, symbol, entry_shares, "rsi", "oversold bounce")
+                result = submit_entry(trading, symbol, entry_shares, "rsi", "oversold bounce", close)
                 if result is None:
                     tickers[symbol] = {**tickers[symbol], "last_action": "oversold confirmed, order already pending"}
                 else:
