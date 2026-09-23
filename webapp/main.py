@@ -19,6 +19,13 @@ let someone fake trade reports). Locally, paper_trade_alpaca.py still writes its
 files directly and skips these entirely (no DASHBOARD_URL configured) -- both paths write to
 the exact same files, so the GET endpoints below don't need to know which one produced them.
 
+CLOSED-TRADE ANALYSIS (2026-09-23, explicit user request -- "make the bots analyze the
+mistakes on the failed trades"): /api/report_closed_trade and /api/closed_trades are the same
+report/read pair as trades above, but for whole round-trips (entry through exit) instead of
+individual fills -- each row pairs the setup's own entry features with the real outcome, so
+analyze_live_trades.py can compare real winners vs real losers the way analyze_failures.py
+already does on backtest data. See paper_trade_alpaca.py for what writes these.
+
 MULTI-AGENT (2026-09-06, "scale it to a workflow"): status is now PER STRATEGY
 (agent_status_<strategy>.json), since paper_trade_alpaca.py can run more than one validated
 strategy (breakout, rsi) as separate agents with disjoint ticker universes. /api/agents
@@ -58,6 +65,7 @@ load_dotenv()
 BASE_DIR = pathlib.Path(__file__).parent
 RESULTS_PATH = BASE_DIR / "results.json"
 TRADES_PATH = BASE_DIR / "agent_trades.json"  # local-dev fallback only when DATABASE_URL is unset
+CLOSED_TRADES_PATH = BASE_DIR / "agent_closed_trades.json"  # local-dev fallback only when DATABASE_URL is unset
 KILL_SWITCH_PATH = BASE_DIR / "kill_switch_state.json"  # local-dev fallback only when DATABASE_URL is unset
 REVALIDATION_PATH = BASE_DIR / "revalidation_runs.json"  # local-dev fallback only when DATABASE_URL is unset
 
@@ -108,6 +116,37 @@ def _ensure_revalidation_table():
         conn.commit()
 
 
+def _ensure_closed_trades_table():
+    """2026-09-23, explicit user request -- "make the bots analyze the mistakes on the failed
+    trades": one row per CLOSED round-trip (entry through exit), pairing the setup's own entry
+    features with what actually happened, so analyze_live_trades.py can compare real winners
+    vs real losers -- the live counterpart to analyze_failures.py's backtest-only version.
+    features JSONB rather than fixed columns since breakout and rsi log different features
+    (breakout_margin_pct/volume_ratio/trend_strength_pct vs rsi_at_entry) and a future
+    strategy will have its own set again."""
+    if not DATABASE_URL:
+        return
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS closed_trades (
+                id SERIAL PRIMARY KEY,
+                strategy TEXT,
+                symbol TEXT,
+                entry_date TEXT,
+                exit_date TEXT,
+                entry_price NUMERIC,
+                exit_price NUMERIC,
+                size INTEGER,
+                pnl_pct NUMERIC,
+                won BOOLEAN,
+                exit_reason TEXT,
+                features JSONB,
+                reported_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        conn.commit()
+
+
 def _ensure_kill_switch_table():
     if not DATABASE_URL:
         return
@@ -126,6 +165,7 @@ def _ensure_kill_switch_table():
 
 try:
     _ensure_trades_table()
+    _ensure_closed_trades_table()
     _ensure_kill_switch_table()
     _ensure_revalidation_table()
 except psycopg2.Error as e:
@@ -357,6 +397,70 @@ def delete_test_trades():
     remaining = [t for t in trades if t.get("symbol") != "TEST"]
     TRADES_PATH.write_text(json.dumps(remaining, indent=2))
     return {"ok": True, "deleted": len(trades) - len(remaining)}
+
+
+@app.get("/api/closed_trades", dependencies=[Depends(require_reader)])
+def closed_trades():
+    """Real closed round-trips with their entry features + outcome -- same require_reader
+    (dashboard password) gate as /api/live_trades, NOT require_agent: this is read by the
+    dashboard's own Analysis tab in the browser, and embedding the agent's bearer token
+    (which can also WRITE trades/kill-switch state) in frontend JS would hand that write
+    capability to anyone who can view the dashboard. analyze_live_trades.py reads this same
+    endpoint using DASHBOARD_PASSWORD (HTTP Basic), not AGENT_REPORT_TOKEN -- it's a read,
+    which is a require_reader concern, same split as live_trades (require_reader) vs
+    report_trade (require_agent)."""
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT strategy, symbol, entry_date, exit_date, entry_price, exit_price, "
+                    "size, pnl_pct, won, exit_reason, features FROM closed_trades ORDER BY id ASC"
+                )
+                rows = cur.fetchall()
+            return [
+                {"strategy": r[0], "symbol": r[1], "entry_date": r[2], "exit_date": r[3],
+                 "entry_price": float(r[4]), "exit_price": float(r[5]), "size": r[6],
+                 "pnl_pct": float(r[7]), "won": r[8], "exit_reason": r[9], **(r[10] or {})}
+                for r in rows
+            ]
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres read failed, falling back to local file: {e}")
+
+    if not CLOSED_TRADES_PATH.exists():
+        return []
+    return json.loads(CLOSED_TRADES_PATH.read_text())
+
+
+@app.post("/api/report_closed_trade", dependencies=[Depends(require_agent)])
+async def report_closed_trade(request: Request):
+    """paper_trade_alpaca.py's HTTP path for one real closed round-trip. Persists to Postgres
+    when configured (survives this service's own redeploys, same reason as report_trade),
+    falling back to the local file otherwise."""
+    trade = await request.json()
+    known_fields = {"strategy", "symbol", "entry_date", "exit_date", "entry_price", "exit_price",
+                     "size", "pnl_pct", "won", "exit_reason"}
+    features = {k: v for k, v in trade.items() if k not in known_fields}
+
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO closed_trades (strategy, symbol, entry_date, exit_date, entry_price, "
+                    "exit_price, size, pnl_pct, won, exit_reason, features) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (trade.get("strategy"), trade.get("symbol"), trade.get("entry_date"), trade.get("exit_date"),
+                     trade.get("entry_price"), trade.get("exit_price"), trade.get("size"), trade.get("pnl_pct"),
+                     trade.get("won"), trade.get("exit_reason"), json.dumps(features)),
+                )
+                conn.commit()
+            return {"ok": True}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
+    trades = json.loads(CLOSED_TRADES_PATH.read_text()) if CLOSED_TRADES_PATH.exists() else []
+    trades.append(trade)
+    CLOSED_TRADES_PATH.write_text(json.dumps(trades, indent=2))
+    return {"ok": True}
 
 
 @app.post("/api/report_status/{strategy}", dependencies=[Depends(require_agent)])

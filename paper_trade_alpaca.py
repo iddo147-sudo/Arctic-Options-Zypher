@@ -74,6 +74,11 @@ WEBAPP_DIR = pathlib.Path(__file__).parent / "webapp"
 # dashboard's Live Trades table reads them all as one real fill history. Status and position
 # state are PER STRATEGY -- see module docstring for why cross-agent state must stay separate.
 TRADES_PATH = WEBAPP_DIR / "agent_trades.json"
+# 2026-09-23, explicit user request -- "make the bots analyze the mistakes on the failed
+# trades": one row per CLOSED round-trip (entry through exit), pairing the setup's own entry
+# features with the real outcome. Local-dev fallback only -- see webapp/main.py's
+# /api/report_closed_trade for the Postgres path used once DASHBOARD_URL is configured.
+CLOSED_TRADES_PATH = WEBAPP_DIR / "agent_closed_trades.json"
 
 
 def status_path(strategy: str) -> pathlib.Path:
@@ -82,6 +87,14 @@ def status_path(strategy: str) -> pathlib.Path:
 
 def position_state_path(strategy: str) -> pathlib.Path:
     return WEBAPP_DIR / f"agent_position_state_{strategy}.json"
+
+
+def entry_features_path(strategy: str) -> pathlib.Path:
+    """Where each strategy's OWN entry features live per open symbol (breakout:
+    breakout_margin_pct/volume_ratio/trend_strength_pct, rsi: rsi_at_entry) -- captured the
+    moment an entry fires, so they're still around to pair with the outcome whenever that
+    position eventually closes, possibly runs (and processes) later."""
+    return WEBAPP_DIR / f"agent_entry_features_{strategy}.json"
 
 
 # Only set when this runs as a SEPARATE Railway service (a Cron Schedule) from the
@@ -216,8 +229,39 @@ def log_live_trade(strategy, symbol, side, price, size, reason):
     )
 
 
+def log_closed_trade(strategy, symbol, entry_date, exit_date, entry_price, exit_price, size,
+                      reason, features):
+    """Appends one CLOSED round-trip (entry features + real outcome) to the shared
+    agent_closed_trades.json -- the real-trading counterpart to analyze_failures.py's
+    backtest-only winners-vs-losers comparison, read by analyze_live_trades.py."""
+    trade = {
+        "strategy": strategy,
+        "symbol": symbol,
+        "entry_date": entry_date,
+        "exit_date": exit_date,
+        "entry_price": round(entry_price, 2),
+        "exit_price": round(exit_price, 2),
+        "size": size,
+        "pnl_pct": round(100 * (exit_price - entry_price) / entry_price, 2),
+        "won": exit_price > entry_price,
+        "exit_reason": reason,
+        **features,
+    }
+    trades = json.loads(CLOSED_TRADES_PATH.read_text()) if CLOSED_TRADES_PATH.exists() else []
+    trades.append(trade)
+    CLOSED_TRADES_PATH.write_text(json.dumps(trades, indent=2))
+    _report("/api/report_closed_trade", trade)
+
+
 def load_entry_dates(strategy: str) -> dict:
     path = position_state_path(strategy)
+    if path.exists():
+        return json.loads(path.read_text())
+    return {}
+
+
+def load_entry_features(strategy: str) -> dict:
+    path = entry_features_path(strategy)
     if path.exists():
         return json.loads(path.read_text())
     return {}
@@ -286,8 +330,9 @@ def submit_exit(trading, symbol, qty, strategy, reference_price) -> dict | None:
 
 
 def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_dates: dict,
-                           halted: bool = False) -> dict:
+                           entry_features: dict, halted: bool = False) -> dict:
     p = Breakout.params
+    # volume_ma_period (20) is already comfortably inside this buffer (max(50,20)*2=100 days).
     lookback_days = max(p.trend_period, p.breakout_period) * 2  # generous buffer for weekends/holidays
     bars = fetch_bars(data_client, symbol, lookback_days)
     if bars is None or len(bars) < p.trend_period + 1:
@@ -299,6 +344,14 @@ def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_
     # Highest close of the PRIOR breakout_period days, excluding today -- same convention as
     # strategies/breakout.py's own bt.indicators.Highest(self.data.close(-1), ...).
     highest = float(closes.iloc[-(p.breakout_period + 1):-1].max())
+    # Same three entry features strategies/breakout.py computes for its own closed_trades --
+    # kept in sync deliberately so analyze_live_trades.py's real numbers mean the same thing
+    # as analyze_failures.py's backtest ones.
+    volumes = bars["volume"]
+    volume_ma = float(volumes.rolling(p.volume_ma_period).mean().iloc[-1])
+    volume_ratio = round(float(volumes.iloc[-1]) / volume_ma, 2) if volume_ma else 0
+    breakout_margin_pct = round(100 * (today_close - highest) / highest, 2)
+    trend_strength_pct = round(100 * (today_close - trend_ma) / trend_ma, 2)
 
     try:
         position = trading.get_open_position(symbol)
@@ -330,6 +383,8 @@ def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_
             return {"position": 0, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
                     "highest": round(highest, 2), "last_action": "breakout confirmed, order already pending"}
         entry_dates[symbol] = datetime.date.today().isoformat()
+        entry_features[symbol] = {"breakout_margin_pct": breakout_margin_pct, "volume_ratio": volume_ratio,
+                                   "trend_strength_pct": trend_strength_pct}
         log_live_trade("breakout", symbol, "BUY", today_close, shares, "trend breakout")
         return {"position": shares, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
                 "highest": round(highest, 2), "last_action": f"BUY {shares} {symbol}",
@@ -356,6 +411,9 @@ def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_
                 "last_action": f"exit ({reason}) pending, order already in flight"}
     entry_dates.pop(symbol, None)
     log_live_trade("breakout", symbol, "SELL", today_close, abs(current_qty), reason)
+    log_closed_trade("breakout", symbol, entry_date_str, datetime.date.today().isoformat(),
+                      avg_entry_price, today_close, abs(current_qty), reason,
+                      entry_features.pop(symbol, {}))
     return {"position": 0, "close": round(today_close, 2),
             "last_action": f"SELL {abs(current_qty)} {symbol} ({reason})", "last_order_id": result["order_id"]}
 
@@ -377,7 +435,7 @@ def _compute_rsi(closes) -> float:
 
 
 def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates: dict,
-                      halted: bool = False) -> dict:
+                      entry_features: dict, halted: bool = False) -> dict:
     period = RSI_PARAMS["rsi_period"]
     lookback_days = period * 6  # generous buffer for Wilder smoothing to converge + weekends/holidays
     bars = fetch_bars(data_client, symbol, lookback_days)
@@ -439,6 +497,9 @@ def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates
                 "entry_price": round(avg_entry_price, 2), "last_action": f"exit ({reason}) pending, order already in flight"}
     entry_dates.pop(symbol, None)
     log_live_trade("rsi", symbol, "SELL", today_close, abs(current_qty), reason)
+    log_closed_trade("rsi", symbol, entry_date_str, datetime.date.today().isoformat(),
+                      avg_entry_price, today_close, abs(current_qty), reason,
+                      entry_features.pop(symbol, {}))
     return {"position": 0, "close": round(today_close, 2), "rsi": rsi_value,
             "last_action": f"SELL {abs(current_qty)} {symbol} ({reason})", "last_order_id": result["order_id"]}
 
@@ -501,12 +562,14 @@ def run(strategy: str, symbols: list[str], shares: int):
               f"(existing positions still monitored for exits).")
 
     entry_dates = load_entry_dates(strategy)
+    entry_features = load_entry_features(strategy)
     tickers = {}
     fired = []  # (symbol, action_text, order_id) for whichever symbols actually traded this run
     for symbol in symbols:
         try:
             tickers[symbol] = _run_with_timeout(
-                check_fn, (trading, data_client, symbol, shares, entry_dates, halted), SYMBOL_CHECK_TIMEOUT_SECONDS)
+                check_fn, (trading, data_client, symbol, shares, entry_dates, entry_features, halted),
+                SYMBOL_CHECK_TIMEOUT_SECONDS)
         except TimeoutError as e:
             print(f"[warn] {symbol} check {e} -- skipping this run.")
             tickers[symbol] = {"error": str(e)}
@@ -539,6 +602,7 @@ def run(strategy: str, symbols: list[str], shares: int):
                     tickers[symbol] = {**tickers[symbol], "last_action": "oversold confirmed, order already pending"}
                 else:
                     entry_dates[symbol] = datetime.date.today().isoformat()
+                    entry_features[symbol] = {"rsi_at_entry": tickers[symbol]["rsi"]}
                     log_live_trade("rsi", symbol, "BUY", close, entry_shares, "oversold bounce")
                     tickers[symbol] = {**tickers[symbol], "position": entry_shares,
                                         "last_action": f"BUY {entry_shares} {symbol}", "last_order_id": result["order_id"]}
@@ -546,6 +610,7 @@ def run(strategy: str, symbols: list[str], shares: int):
                 tickers[symbol].pop("_pending_entry", None)
 
     position_state_path(strategy).write_text(json.dumps(entry_dates, indent=2))
+    entry_features_path(strategy).write_text(json.dumps(entry_features, indent=2))
 
     summary = "; ".join(text for _, text, _ in fired) if fired else f"checked {len(symbols)} tickers -- no setups"
     payload = {

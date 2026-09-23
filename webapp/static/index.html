@@ -7,100 +7,194 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
-/* FUTURISTIC PASS (2026-09-05, explicit user request -- "less arcady... futuristic as well
-   as the robot"): swapped the pixel-notch/8-bit language for a HUD-panel look -- thin glowing
-   cyan edges, single-diagonal-cut corners instead of stepped pixel corners, "Orbitron" for
-   headers (a geometric sci-fi display face) and "Share Tech Mono" for data/labels (a clean
-   technical monospace, not a retro bitmap one). Green/red stays for profit/loss/long/short --
-   that's meaningful data encoding, not chrome, so it survived the re-theme untouched. */
+/* LIQUID GLASS PASS (2026-09-23, explicit user request -- "more data tabs... light/dark...
+   liquid glass UI and a bit spatial... bring more life to that dashboard"): panels/tiles/tabs
+   moved from the old diagonal-cut HUD silhouette (clip-path polygons) to translucent,
+   backdrop-blurred glass -- rounded continuous corners, a soft inner top highlight standing in
+   for a specular glint, and a deep blurred drop shadow so panels read as floating ABOVE the
+   background rather than flush with it (the "spatial" half of the ask). Every color -- glass
+   tint, border, ink, accent, up/down -- is a CSS variable so light/dark is a single attribute
+   flip (:root[data-theme]) rather than a second stylesheet; nothing here hardcodes a hex value
+   outside the two token blocks below. The Orbitron/Share Tech Mono pairing, the mascot bot, and
+   the per-agent CCTV camera-feed chrome all survive this pass untouched -- none of that was
+   what "liquid glass" was asking to replace, just the panel material itself. */
 :root {
-  --surface-0: #060a12;
-  --surface-1: #080e18;
-  --surface-2: #0d1926;
-
-  --line: rgba(93, 224, 255, 0.16);
-  --edge: rgba(93, 224, 255, 0.32);
-  --accent: #5de0ff;
-  --accent-dim: rgba(93, 224, 255, 0.5);
-
-  --ink: #eaf6fb;
-  --ink-2: #93b2c4;
-  --ink-3: #5c7d8f;
+  --display-font: "Orbitron", ui-sans-serif, system-ui, sans-serif;
+  --tech-font: "Share Tech Mono", ui-monospace, "Courier New", monospace;
 
   --up: #2ecc71;
   --up-lift: #6fe3a0;
   --down: #e14b4b;
   --down-lift: #f28a8a;
+}
 
-  --bevel: 14px;
-  --bevel-sm: 8px;
-  --display-font: "Orbitron", ui-sans-serif, system-ui, sans-serif;
-  --tech-font: "Share Tech Mono", ui-monospace, "Courier New", monospace;
+/* ---- theme tokens: dark is the original identity, light is the new sibling --------------
+   Both are just DIFFERENT VALUES for the same variable names, so nothing that reads
+   var(--ink)/var(--accent)/etc. below needs to know which theme is active. Default (no
+   data-theme attribute) follows the OS preference; an explicit choice (the toggle button)
+   overrides it via :root[data-theme="..."], which always wins over the media query. */
+:root, :root[data-theme="dark"] {
+  --bg-0: #05070c;
+  --bg-1: #080d16;
+  --blob-1: rgba(93, 224, 255, 0.12);
+  --blob-2: rgba(140, 110, 255, 0.10);
 
-  /* Single diagonal cut on two opposite corners -- the classic sci-fi HUD panel silhouette,
-     as opposed to the previous stepped-pixel corner on all four. */
-  --clip-lg: polygon(
-    var(--bevel) 0, 100% 0, 100% calc(100% - var(--bevel)), calc(100% - var(--bevel)) 100%, 0 100%, 0 var(--bevel));
-  --clip-sm: polygon(
-    var(--bevel-sm) 0, 100% 0, 100% calc(100% - var(--bevel-sm)), calc(100% - var(--bevel-sm)) 100%, 0 100%, 0 var(--bevel-sm));
+  --glass: rgba(255, 255, 255, 0.045);
+  --glass-2: rgba(255, 255, 255, 0.028);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-highlight: rgba(255, 255, 255, 0.14);
+  --glass-shadow: rgba(0, 0, 0, 0.55);
+
+  --line: rgba(255, 255, 255, 0.08);
+  --accent: #5de0ff;
+  --accent-ink: #04141c;
+  --accent-dim: rgba(93, 224, 255, 0.5);
+
+  --ink: #eaf6fb;
+  --ink-2: #93b2c4;
+  --ink-3: #62808f;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg-0: #e9eff5;
+    --bg-1: #f3f6fa;
+    --blob-1: rgba(0, 144, 199, 0.10);
+    --blob-2: rgba(120, 90, 220, 0.08);
+
+    --glass: rgba(255, 255, 255, 0.6);
+    --glass-2: rgba(255, 255, 255, 0.4);
+    --glass-border: rgba(20, 45, 65, 0.10);
+    --glass-highlight: rgba(255, 255, 255, 0.85);
+    --glass-shadow: rgba(30, 50, 80, 0.16);
+
+    --line: rgba(20, 45, 65, 0.10);
+    --accent: #0090c7;
+    --accent-ink: #ffffff;
+    --accent-dim: rgba(0, 144, 199, 0.32);
+
+    --ink: #12212d;
+    --ink-2: #45606f;
+    --ink-3: #72879a;
+  }
+}
+:root[data-theme="light"] {
+  --bg-0: #e9eff5;
+  --bg-1: #f3f6fa;
+  --blob-1: rgba(0, 144, 199, 0.10);
+  --blob-2: rgba(120, 90, 220, 0.08);
+
+  --glass: rgba(255, 255, 255, 0.6);
+  --glass-2: rgba(255, 255, 255, 0.4);
+  --glass-border: rgba(20, 45, 65, 0.10);
+  --glass-highlight: rgba(255, 255, 255, 0.85);
+  --glass-shadow: rgba(30, 50, 80, 0.16);
+
+  --line: rgba(20, 45, 65, 0.10);
+  --accent: #0090c7;
+  --accent-ink: #ffffff;
+  --accent-dim: rgba(0, 144, 199, 0.32);
+
+  --ink: #12212d;
+  --ink-2: #45606f;
+  --ink-3: #72879a;
 }
 
 * { box-sizing: border-box; }
+html { color-scheme: dark light; }
 body {
   margin: 0; min-height: 100vh;
-  background: var(--surface-1); color: var(--ink);
+  background: var(--bg-1); color: var(--ink);
   font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+  transition: background-color .4s ease, color .4s ease;
 }
+/* Two soft drifting color blobs behind everything -- the "spatial" backdrop the glass panels
+   float above. Slow, near-imperceptible drift (40s loop) reads as alive without being distracting;
+   prefers-reduced-motion turns it into a static gradient, same tokens either way. */
 body::before {
-  content: ""; position: fixed; inset: 0; pointer-events: none;
+  content: ""; position: fixed; inset: -10%; pointer-events: none; z-index: 0;
   background:
-    radial-gradient(900px 620px at 12% -8%, rgba(93, 224, 255, 0.10), transparent 62%),
-    radial-gradient(760px 520px at 92% 4%, rgba(130, 110, 255, 0.08), transparent 60%);
+    radial-gradient(900px 620px at 14% -6%, var(--blob-1), transparent 60%),
+    radial-gradient(760px 560px at 88% 8%, var(--blob-2), transparent 58%),
+    radial-gradient(700px 500px at 30% 96%, var(--blob-1), transparent 60%);
+  animation: blobDrift 46s ease-in-out infinite alternate;
 }
-/* Faint horizontal scanlines across the whole page -- cheap to render, reads as "screen/HUD"
-   rather than "print". Subtle on purpose; this is texture, not a motif. */
+@keyframes blobDrift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  100% { transform: translate3d(1.5%, 2%, 0) scale(1.04); }
+}
 body::after {
-  content: ""; position: fixed; inset: 0; pointer-events: none; opacity: 0.5;
-  background: repeating-linear-gradient(0deg, rgba(93,224,255,0.025) 0px, rgba(93,224,255,0.025) 1px, transparent 1px, transparent 3px);
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: 0.35;
+  background: repeating-linear-gradient(0deg, rgba(93,224,255,0.02) 0px, rgba(93,224,255,0.02) 1px, transparent 1px, transparent 3px);
 }
+@media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
 
-.wrap { position: relative; max-width: 1100px; margin: 0 auto; padding: 40px 24px 72px; }
+.wrap { position: relative; z-index: 1; max-width: 1180px; margin: 0 auto; padding: 40px 24px 72px; }
 
-header { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
+header { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 h1 {
   margin: 0; font-family: var(--display-font); font-weight: 700;
   font-size: clamp(22px, 4vw, 32px); line-height: 1.2; letter-spacing: 0.04em;
   background: linear-gradient(96deg, var(--ink) 20%, var(--accent));
   -webkit-background-clip: text; background-clip: text; color: transparent;
-  filter: drop-shadow(0 0 14px rgba(93, 224, 255, 0.25));
+  filter: drop-shadow(0 0 14px var(--accent-dim));
 }
 .sub { margin: 8px 0 0; color: var(--ink-3); font-size: 13.5px; font-family: var(--tech-font); }
 .spacer { flex: 1 1 auto; }
 
-.badge {
+.badge, .theme-toggle {
   display: inline-flex; align-items: center; gap: 9px;
   padding: 9px 16px 9px 12px;
-  background: rgba(13, 25, 38, 0.75);
-  border: 1px solid var(--edge);
-  clip-path: var(--clip-sm);
+  background: var(--glass-2);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
   color: var(--ink-2);
   font-family: var(--tech-font);
   font-size: 11px; letter-spacing: 0.04em; line-height: 1;
-  box-shadow: 0 0 16px -6px var(--accent-dim);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 10px 24px -14px var(--glass-shadow);
 }
+.theme-toggle { cursor: pointer; border: none; appearance: none; transition: transform .2s ease, box-shadow .2s ease; }
+.theme-toggle:hover { transform: translateY(-1px); box-shadow: inset 0 1px 0 var(--glass-highlight), 0 14px 28px -14px var(--glass-shadow); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
 .dot.live { background: var(--up-lift); box-shadow: 0 0 0 0 rgba(111,227,160,.55); animation: pulse 2.4s ease-out infinite; }
 @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(111,227,160,.5)} 70%{box-shadow:0 0 0 9px rgba(111,227,160,0)} 100%{box-shadow:0 0 0 0 rgba(111,227,160,0)} }
 
+/* ---- tab navigation -- a floating glass pill bar, one active tab shown at a time ------- */
+.tabbar {
+  display: flex; gap: 4px; flex-wrap: wrap;
+  padding: 5px; width: fit-content; max-width: 100%;
+  background: var(--glass-2); border: 1px solid var(--glass-border);
+  border-radius: 999px; backdrop-filter: blur(18px) saturate(160%); -webkit-backdrop-filter: blur(18px) saturate(160%);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 10px 24px -16px var(--glass-shadow);
+  margin: 0 0 22px;
+}
+.tab-btn {
+  border: none; background: transparent; color: var(--ink-3); cursor: pointer;
+  font-family: var(--tech-font); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase;
+  padding: 9px 18px; border-radius: 999px; transition: background-color .2s ease, color .2s ease;
+  white-space: nowrap;
+}
+.tab-btn:hover:not(.active) { color: var(--ink); background: var(--line); }
+.tab-btn.active { background: var(--accent); color: var(--accent-ink); box-shadow: 0 6px 18px -6px var(--accent-dim); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; animation: tabIn .25s ease; }
+@keyframes tabIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .tab-panel.active { animation: none; } }
+
 .panel {
   position: relative;
-  background: linear-gradient(165deg, var(--surface-2), var(--surface-1) 82%);
-  border: 1px solid var(--line);
-  clip-path: var(--clip-lg);
+  background: linear-gradient(165deg, var(--glass), var(--glass-2) 88%);
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  backdrop-filter: blur(22px) saturate(160%); -webkit-backdrop-filter: blur(22px) saturate(160%);
   padding: 24px 26px 28px;
-  box-shadow: inset 0 1px 0 var(--edge), 0 14px 34px -14px rgba(0,0,0,.8), 0 0 30px -18px var(--accent-dim);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 24px 54px -30px var(--glass-shadow);
+  transition: transform .25s ease, box-shadow .25s ease, background-color .4s ease, border-color .4s ease;
 }
+.panel:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 var(--glass-highlight), 0 30px 64px -28px var(--glass-shadow); }
 .panel + .panel { margin-top: 20px; }
 .panel h2 {
   margin: 0 0 10px; font-family: var(--display-font); font-weight: 700;
@@ -110,14 +204,17 @@ h1 {
 
 .tiles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 20px; }
 .tile {
-  background: linear-gradient(165deg, var(--surface-2), var(--surface-1) 85%);
-  border: 1px solid var(--line);
-  clip-path: var(--clip-sm);
+  background: linear-gradient(165deg, var(--glass), var(--glass-2) 90%);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  backdrop-filter: blur(18px) saturate(150%); -webkit-backdrop-filter: blur(18px) saturate(150%);
   padding: 18px 20px 20px;
-  box-shadow: inset 0 1px 0 var(--edge), 0 12px 30px -16px rgba(0,0,0,.85);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 16px 34px -20px var(--glass-shadow);
+  transition: transform .2s ease, box-shadow .2s ease;
 }
+.tile:hover { transform: translateY(-2px); }
 .tile .label { color: var(--ink-3); font-size: 10.5px; font-family: var(--tech-font); text-transform: uppercase; letter-spacing: .08em; line-height: 1.6; }
-.tile .value { margin-top: 10px; font-family: var(--display-font); font-weight: 700; font-size: 24px; }
+.tile .value { margin-top: 10px; font-family: var(--display-font); font-weight: 700; font-size: 24px; color: var(--ink); }
 .tile .value.up { color: var(--up-lift); text-shadow: 0 0 12px rgba(111,227,160,.35); }
 .tile .value.down { color: var(--down-lift); text-shadow: 0 0 12px rgba(242,138,138,.35); }
 .tile .foot { margin-top: 6px; color: var(--ink-3); font-size: 12px; font-family: var(--tech-font); }
@@ -125,45 +222,40 @@ h1 {
 canvas { width: 100%; display: block; }
 
 table.data { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 12.5px; font-family: var(--tech-font); }
-table.data th, table.data td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
+table.data th, table.data td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
 table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+table.data tbody tr { transition: background-color .15s ease; }
+table.data tbody tr:hover { background: var(--line); }
 .side-buy { color: var(--up-lift); font-weight: 600; }
 .side-sell { color: var(--down-lift); font-weight: 600; }
 
 .empty { padding: 34px 4px; text-align: center; color: var(--ink-3); font-size: 13.5px; }
 
 /* ---- mascot -------------------------------------------------------------------
-   A little pixel-art bot standing in for the agent -- explicit user request ("a
-   little cute bot working"). Built from plain blocky divs (no image asset) to match
-   the rest of this dashboard's sharp-cornered, no-external-asset style. Four states
-   driven by /api/status in the JS below: dormant (backtest mode, no live agent),
-   idle (connected, holding), working (mid-check), traded (just fired an order --
-   a brief celebration before settling back to idle). */
+   Unchanged from the original build -- still plain blocky divs, still driven by the same
+   four states from /api/status. Colors are all var()-based already, so it reads correctly
+   in both themes with no edits needed here. */
 .mascot { display: flex; align-items: center; gap: 12px; }
 .mascot-bot {
   position: relative;
   width: 38px; height: 46px;
   animation: botHover 3.2s ease-in-out infinite;
 }
-/* Open targeting-reticle ring hovering above the head, standing in for the old antenna --
-   reads as "scanner", not "TV aerial", which is the whole point of the re-theme. */
 .mascot-ring {
   position: absolute; top: -12px; left: 9px; width: 18px; height: 18px;
   border: 2px solid var(--ink-3); border-top-color: transparent; border-radius: 50%;
 }
 .mascot-head {
   position: absolute; top: 2px; left: 5px; width: 28px; height: 16px;
-  background: var(--surface-2); border: 1px solid var(--ink-3);
+  background: var(--glass-2); border: 1px solid var(--ink-3);
   border-radius: 9px 9px 4px 4px;
   display: flex; align-items: center; justify-content: center;
   overflow: hidden;
 }
-/* One glowing visor strip instead of two square pixel eyes -- a single-sensor "face" is the
-   more recognizably sci-fi-drone read than a blocky two-eyed one. */
 .mascot-visor { width: 18px; height: 4px; border-radius: 2px; background: var(--ink-3); }
 .mascot-body {
   position: absolute; top: 18px; left: 3px; width: 32px; height: 24px;
-  background: var(--surface-2); border: 1px solid var(--ink-3);
+  background: var(--glass-2); border: 1px solid var(--ink-3);
   border-radius: 11px;
 }
 .mascot-core {
@@ -171,12 +263,9 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
   border-radius: 50%; background: var(--ink-3);
 }
 
-/* Dormant: no live agent -- powered down. Ring and visor go fully dark, no hover/spin. */
 .mascot-bot.dormant { animation: none; opacity: 0.5; }
 .mascot-bot.dormant .mascot-ring { animation: none; }
 
-/* Idle/working/traded: visor + core + ring light up cyan (the chrome accent), matching this
-   dashboard's own HUD glow rather than the green/red reserved for P&L data. */
 .mascot-bot.idle .mascot-visor, .mascot-bot.working .mascot-visor, .mascot-bot.traded .mascot-visor {
   background: var(--accent); box-shadow: 0 0 8px var(--accent-dim);
 }
@@ -204,29 +293,24 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
 
 .mascot-caption { color: var(--ink-3); font-size: 11px; font-family: var(--tech-font); max-width: 150px; line-height: 1.5; }
 
-/* ---- CCTV monitor-wall chrome (2026-09-06, explicit user request -- "make the whole
-   system look like a closed circuit... make the agent displays feel a bit more alive").
-   Each live agent renders as its own camera feed: an on-screen-display label top-left
-   ("CAM 01 -- BREAKOUT"), a blinking REC indicator top-right, a live-ticking timestamp
-   bottom-right, and a faint scanline+vignette overlay -- all absolutely positioned INSIDE
-   the existing .panel (which already clips to the HUD diagonal-corner shape), so this reads
-   as chrome on top of the established look rather than a competing style. */
-.feed-panel { position: relative; padding-top: 44px; }
+/* ---- CCTV monitor-wall chrome -- unchanged concept, now sitting on a glass panel instead
+   of a diagonal-cut HUD one. Still reads as "camera feed floating on glass", not a clash. */
+.feed-panel { position: relative; padding-top: 44px; overflow: hidden; }
 .feed-scanline {
-  /* Plain low-opacity overlay, same technique as the page's own body::after scanlines --
-     deliberately NOT mix-blend-mode (tested and dropped: caused a solid black rendering
-     artifact on this same repeating-gradient + position:absolute combination). */
-  position: absolute; inset: 0; pointer-events: none; z-index: 1; opacity: 0.5;
+  position: absolute; inset: 0; pointer-events: none; z-index: 1; opacity: 0.4;
   background: repeating-linear-gradient(0deg, rgba(93,224,255,0.05) 0px, rgba(93,224,255,0.05) 1px, transparent 1px, transparent 3px);
+  border-radius: inherit;
 }
 .feed-vignette {
   position: absolute; inset: 0; pointer-events: none; z-index: 1;
-  background: radial-gradient(140% 90% at 50% 20%, transparent 60%, rgba(0,0,0,0.30) 100%);
+  background: radial-gradient(140% 90% at 50% 20%, transparent 60%, var(--glass-shadow) 130%);
+  opacity: 0.5;
+  border-radius: inherit;
 }
 .feed-osd {
   position: absolute; top: 16px; left: 26px; z-index: 2;
   font-family: var(--tech-font); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--accent); text-shadow: 0 0 6px rgba(93,224,255,.5);
+  color: var(--accent); text-shadow: 0 0 6px var(--accent-dim);
 }
 .feed-rec {
   position: absolute; top: 15px; right: 26px; z-index: 2; display: flex; align-items: center; gap: 6px;
@@ -242,17 +326,19 @@ table.data th { color: var(--accent); font-weight: 400; font-size: 10px; text-tr
 }
 @media (prefers-reduced-motion: reduce) { .feed-rec .rec-dot { animation: none; } }
 
-/* A ticker row briefly highlights when its data actually changes between polls -- "alive"
-   readback instead of numbers just silently being different next time you glance over. */
-@keyframes rowFlash { 0% { background: rgba(93,224,255,0.22); } 100% { background: transparent; } }
+@keyframes rowFlash { 0% { background: var(--accent-dim); } 100% { background: transparent; } }
 tr.row-flash { animation: rowFlash 1.6s ease-out; }
 
-/* ---- settings / config table ---------------------------------------------------------- */
 table.config { width: 100%; border-collapse: collapse; font-size: 12.5px; font-family: var(--tech-font); }
 table.config th { text-align: left; color: var(--accent); font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 table.config td { padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); }
 table.config td.param-name { color: var(--ink-3); }
 table.config td.param-value { color: var(--ink); font-weight: 600; }
+
+.section-label {
+  color: var(--accent); font-family: var(--tech-font); font-size: 11px;
+  letter-spacing: .08em; text-transform: uppercase; margin-bottom: 10px;
+}
 </style>
 </head>
 <body>
@@ -275,56 +361,88 @@ table.config td.param-value { color: var(--ink); font-weight: 600; }
         </div>
       </div>
     </div>
+    <button class="theme-toggle" id="themeToggle" type="button">☾ Dark</button>
     <span class="badge"><span class="dot" id="agentDot"></span><span id="agentText">checking…</span></span>
   </header>
 
-  <div class="tiles" id="tiles"></div>
+  <nav class="tabbar" id="tabbar">
+    <button class="tab-btn" data-tab="overview" type="button">Overview</button>
+    <button class="tab-btn" data-tab="agents" type="button">Agents</button>
+    <button class="tab-btn" data-tab="history" type="button">History</button>
+    <button class="tab-btn" data-tab="analysis" type="button">Analysis</button>
+    <button class="tab-btn" data-tab="settings" type="button">Settings</button>
+  </nav>
 
-  <!-- One panel per agent, built by JS from /api/agents -- more than one validated strategy
-       can run as its own agent now (2026-09-06, "scale it to a workflow"), each with its own
-       disjoint ticker universe, so this can't be a single static panel anymore. -->
-  <div id="agentsWrap"></div>
+  <!-- ===================== OVERVIEW ===================== -->
+  <div class="tab-panel" data-tab-panel="overview">
+    <div class="tiles" id="tiles"></div>
 
-  <section class="panel" id="resultsOverTimePanel" style="display:none">
-    <h2>Results over time</h2>
-    <p class="hint">Cumulative realized P&amp;L per agent, computed from actual closed round-trips in the live trade history below -- this is the real, ongoing paper-trading record, separate from the one-time historical backtest further down.</p>
-    <canvas id="pnlChart" height="200"></canvas>
-  </section>
+    <section class="panel">
+      <h2>Equity curve</h2>
+      <p class="hint">Portfolio value over the backtest window. Flat stretches are the strategy sitting out; the point of this project is not trusting the slope until it's proven against unseen data.</p>
+      <canvas id="equityChart" height="220"></canvas>
+    </section>
 
-  <section class="panel" id="liveTradesPanel" style="display:none">
-    <h2>Live trades</h2>
-    <p class="hint">Real fills submitted by paper_trade_alpaca.py against your Alpaca paper account -- separate from the backtest trade log below, which is simulated.</p>
-    <div id="liveTradeTableWrap"><div class="empty">Loading…</div></div>
-  </section>
+    <section class="panel">
+      <h2>Price &amp; trades</h2>
+      <p class="hint">Green up = buy, red down = sell. A cluster of flips right at a turn means the strategy is whipsawing, not predicting.</p>
+      <canvas id="priceChart" height="220"></canvas>
+    </section>
+  </div>
 
-  <section class="panel" id="settingsPanel" style="display:none">
-    <h2>System configuration</h2>
-    <p class="hint">The validated, currently-live parameters each agent actually ran with last -- read-only by design. Changing a live parameter without re-running the walk-forward validation would defeat the entire point of testing before trusting.</p>
-    <div id="settingsWrap"></div>
-  </section>
+  <!-- ===================== AGENTS ===================== -->
+  <div class="tab-panel" data-tab-panel="agents">
+    <!-- One panel per agent, built by JS from /api/agents -- more than one validated strategy
+         can run as its own agent (2026-09-06, "scale it to a workflow"), each with its own
+         disjoint ticker universe. -->
+    <div id="agentsWrap"></div>
+    <div id="agentsEmpty" class="panel"><div class="empty">No live agent connected yet — this fills in once paper_trade_alpaca.py reports a run.</div></div>
+  </div>
 
-  <section class="panel" id="revalidationPanel" style="display:none">
-    <h2>Quarterly re-validation</h2>
-    <p class="hint">revalidate_strategies.py re-checks each live strategy's fixed, already-validated params against the most recent ~90 days of real data -- same params, same tickers, nothing re-tuned. A flag here means "worth a human look," not "auto-adjusted" -- nothing changes what's live on its own.</p>
-    <div id="revalidationWrap"></div>
-  </section>
+  <!-- ===================== HISTORY ===================== -->
+  <div class="tab-panel" data-tab-panel="history">
+    <section class="panel" id="resultsOverTimePanel">
+      <h2>Results over time</h2>
+      <p class="hint">Cumulative realized P&amp;L per agent, computed from actual closed round-trips in the live trade history below -- this is the real, ongoing paper-trading record, separate from the one-time historical backtest.</p>
+      <canvas id="pnlChart" height="200"></canvas>
+    </section>
 
-  <section class="panel">
-    <h2>Equity curve</h2>
-    <p class="hint">Portfolio value over the backtest window. Flat stretches are the strategy sitting out; the point of this project is not trusting the slope until it's proven against unseen data.</p>
-    <canvas id="equityChart" height="220"></canvas>
-  </section>
+    <section class="panel" id="liveTradesPanel">
+      <h2>Live trades</h2>
+      <p class="hint">Real fills submitted by paper_trade_alpaca.py against your Alpaca paper account, tagged with which agent (strategy) placed each one -- separate from the backtest trade log below, which is simulated.</p>
+      <div id="liveTradeTableWrap"><div class="empty">Loading…</div></div>
+    </section>
 
-  <section class="panel">
-    <h2>Price &amp; trades</h2>
-    <p class="hint">Green up = buy, red down = sell. A cluster of flips right at a turn means the strategy is whipsawing, not predicting.</p>
-    <canvas id="priceChart" height="220"></canvas>
-  </section>
+    <section class="panel">
+      <h2>Backtest trade log</h2>
+      <p class="hint">The one-time historical simulation's own trade log -- not real fills.</p>
+      <div id="tradeTableWrap"><div class="empty">Loading…</div></div>
+    </section>
+  </div>
 
-  <section class="panel">
-    <h2>Trade log</h2>
-    <div id="tradeTableWrap"><div class="empty">Loading…</div></div>
-  </section>
+  <!-- ===================== ANALYSIS ===================== -->
+  <div class="tab-panel" data-tab-panel="analysis">
+    <section class="panel">
+      <h2>Agent analysis</h2>
+      <p class="hint">2026-09-23, "make the bots analyze the mistakes on the failed trades": every real closed round-trip pairs its own entry setup (how far past the breakout level, volume vs average, distance above trend / RSI at entry) with what actually happened, so winners and losers can be compared on the SAME real data -- no backtest, no simulation. An open position that hasn't exited yet isn't a win or a loss yet, so it won't show here until it closes.</p>
+      <div id="analysisWrap"><div class="empty">Loading…</div></div>
+    </section>
+  </div>
+
+  <!-- ===================== SETTINGS ===================== -->
+  <div class="tab-panel" data-tab-panel="settings">
+    <section class="panel" id="settingsPanel">
+      <h2>System configuration</h2>
+      <p class="hint">The validated, currently-live parameters each agent actually ran with last -- read-only by design. Changing a live parameter without re-running the walk-forward validation would defeat the entire point of testing before trusting.</p>
+      <div id="settingsWrap"></div>
+    </section>
+
+    <section class="panel" id="revalidationPanel">
+      <h2>Quarterly re-validation</h2>
+      <p class="hint">revalidate_strategies.py re-checks each live strategy's fixed, already-validated params against the most recent ~90 days of real data -- same params, same tickers, nothing re-tuned. A flag here means "worth a human look," not "auto-adjusted."</p>
+      <div id="revalidationWrap"></div>
+    </section>
+  </div>
 </div>
 
 <script>
@@ -332,6 +450,53 @@ const $ = (s) => document.querySelector(s);
 const fmtPct = (v) => (v == null ? "—" : v.toFixed(2) + "%");
 const fmtNum = (v, d=2) => (v == null ? "—" : v.toFixed(d));
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ---- theme toggle (2026-09-23, "light/dark that user can switch") ---------------------
+// No stored preference -> follow the OS (the plain @media block in the CSS above already
+// does this with zero JS); an explicit click stores a choice that overrides the OS from then
+// on, same "explicit beats inferred" pattern most theme toggles use.
+const THEME_KEY = "dashboardTheme";
+function applyTheme(theme) {
+  if (theme) document.documentElement.setAttribute("data-theme", theme);
+  else document.documentElement.removeAttribute("data-theme");
+  const isLight = theme === "light" || (!theme && matchMedia("(prefers-color-scheme: light)").matches);
+  $("#themeToggle").textContent = isLight ? "☀ Light" : "☾ Dark";
+}
+function initTheme() {
+  let stored = null;
+  try { stored = localStorage.getItem(THEME_KEY); } catch (e) { /* private mode etc -- just follow OS */ }
+  applyTheme(stored);
+}
+$("#themeToggle").addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme")
+    || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  const next = current === "light" ? "dark" : "light";
+  applyTheme(next);
+  try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* ignore -- just won't persist */ }
+  // Charts read colors via cssVar() at DRAW time, so redraw now rather than waiting for the
+  // next 5s poll, otherwise the toggle looks like it did nothing to them.
+  redrawCharts();
+});
+initTheme();
+
+// ---- tab navigation (2026-09-23, "more data tabs") -------------------------------------
+const TABS = ["overview", "agents", "history", "analysis", "settings"];
+const TAB_KEY = "dashboardTab";
+function setActiveTab(tab) {
+  if (!TABS.includes(tab)) tab = "overview";
+  document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.dataset.tabPanel === tab));
+  try { localStorage.setItem(TAB_KEY, tab); } catch (e) { /* ignore */ }
+}
+document.querySelectorAll(".tab-btn").forEach((b) => b.addEventListener("click", () => setActiveTab(b.dataset.tab)));
+(function initTab() {
+  let saved = "overview";
+  try { saved = localStorage.getItem(TAB_KEY) || "overview"; } catch (e) { /* ignore */ }
+  setActiveTab(saved);
+})();
+
+let lastChartData = null; // set by load(), re-used by redrawCharts() on a theme flip
 
 function drawLineChart(canvas, points, valueKey, opts = {}) {
   const ctx = canvas.getContext("2d");
@@ -342,7 +507,7 @@ function drawLineChart(canvas, points, valueKey, opts = {}) {
   ctx.clearRect(0, 0, w, h);
 
   if (!points || !points.length) {
-    ctx.fillStyle = "#647d93"; ctx.font = "13px sans-serif";
+    ctx.fillStyle = cssVar("--ink-3"); ctx.font = "13px sans-serif";
     ctx.fillText("No data yet — run backtest.py", 12, h / 2);
     return;
   }
@@ -354,8 +519,6 @@ function drawLineChart(canvas, points, valueKey, opts = {}) {
   const xStep = w / Math.max(1, points.length - 1);
   const yOf = (v) => h - ((v - yMin) / (yMax - yMin)) * h;
 
-  // Filled area under the line for a bit of visual weight, same "glow" feel as the game
-  // dashboard's bars rather than a bare stroke.
   ctx.beginPath();
   ctx.moveTo(0, h);
   points.forEach((p, i) => ctx.lineTo(i * xStep, yOf(p[valueKey])));
@@ -393,10 +556,6 @@ function drawLineChart(canvas, points, valueKey, opts = {}) {
   }
 }
 
-// ---- live-ticking relative timestamps ("4s ago") -------------------------------------
-// Elements carrying data-since get their text recomputed every second, independent of the
-// 5s poll cycle -- makes the feed read as genuinely live rather than a number that only
-// changes when the page happens to reload data.
 function relTime(iso) {
   const diff = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
   if (diff < 60) return Math.floor(diff) + "s ago";
@@ -409,17 +568,8 @@ function tickClocks() {
 }
 setInterval(tickClocks, 1000);
 
-// ---- per-ticker-row change detection ---------------------------------------------------
-// Remembers each (strategy, symbol)'s last last_action string across polls so a row that
-// genuinely changed can flash -- not on first load (nothing "changed" from nothing, that
-// would just flash the whole table every time you open the page).
 const lastTickerAction = new Map();
 let hasRenderedAgentsOnce = false;
-
-// Tracks the last order id we already celebrated PER STRATEGY (a Set, not one value) --
-// 2026-09-06: more than one agent can fire in the same poll cycle now, so a single
-// "lastCelebratedOrderId" would miss a second agent's trade if it happened to arrive in the
-// same 5s tick as the first's.
 const celebratedOrderIds = new Set();
 
 function updateMascot(agentsList) {
@@ -450,18 +600,11 @@ function updateMascot(agentsList) {
 
 function renderAgentPanel(strategy, status, camIndex) {
   const tickerEntries = Object.entries(status.tickers || {});
-  // rsi status rows carry "rsi" instead of "trend_ma"/"highest" -- render whichever this
-  // agent's ticker data actually has rather than assuming breakout's specific fields.
   const levelCol = (t) => t.entry_price != null ? "entry " + fmtNum(t.entry_price)
     : t.highest != null ? "brk " + fmtNum(t.highest)
     : t.rsi != null ? "RSI " + fmtNum(t.rsi, 1)
     : "—";
 
-  // Total equity (cash + all positions, marked to market) is the REAL net-worth number --
-  // buying power is leveraged margin (~4x equity on this account), which moved around for
-  // its own reasons and got mistaken for a loss when a position was actually just up or
-  // down (2026-09-09 real user confusion). Equity is shown first, tinted by whether it's
-  // above/below the $100,000 paper starting balance, since both agents share one account.
   const STARTING_EQUITY = 100000;
   const equityTone = status.equity == null ? "up" : (status.equity >= STARTING_EQUITY ? "up" : "down");
   const equityFoot = status.equity != null
@@ -506,10 +649,8 @@ function renderAgentPanel(strategy, status, camIndex) {
   </section>`;
 }
 
-// ---- results-over-time: cumulative realized P&L per agent, derived from actual closed
-// round-trips in the live trade history (FIFO-paired BUY->SELL per strategy+symbol) --------
 function computePnlSeries(trades) {
-  const openBySymbol = new Map();   // "strategy|symbol" -> queue of {price, size}
+  const openBySymbol = new Map();
   const cumulativeByStrategy = new Map();
   const seriesByStrategy = new Map();
   const sorted = (trades || []).slice().sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -523,7 +664,7 @@ function computePnlSeries(trades) {
     } else if (t.side === "SELL") {
       const queue = openBySymbol.get(key);
       const entry = queue && queue.shift();
-      if (!entry) continue;  // a SELL with no matching BUY on record (e.g. history starts mid-position) -- skip rather than guess
+      if (!entry) continue;
       const pnl = (t.price - entry.price) * Math.min(entry.size, t.size);
       const running = (cumulativeByStrategy.get(strat) || 0) + pnl;
       cumulativeByStrategy.set(strat, running);
@@ -547,7 +688,7 @@ function drawMultiLineChart(canvas, seriesMap, opts = {}) {
   const series = Array.from(seriesMap.entries()).map(([label, points], i) => ({ label, points, color: PNL_COLORS[i % PNL_COLORS.length] }));
   const allValues = series.flatMap((s) => s.points.map((p) => p.value));
   if (!allValues.length) {
-    ctx.fillStyle = "#647d93"; ctx.font = "13px sans-serif";
+    ctx.fillStyle = cssVar("--ink-3"); ctx.font = "13px sans-serif";
     ctx.fillText(opts.emptyText || "No closed round-trips yet", 12, h / 2);
     return;
   }
@@ -557,7 +698,6 @@ function drawMultiLineChart(canvas, seriesMap, opts = {}) {
   const yMin = min - pad, yMax = max + pad;
   const yOf = (v) => h - ((v - yMin) / (yMax - yMin)) * h;
 
-  // Zero line -- makes "above zero" (net profit so far) vs "below zero" immediately readable.
   ctx.strokeStyle = "rgba(147,178,196,0.3)"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(0, yOf(0)); ctx.lineTo(w, yOf(0)); ctx.stroke(); ctx.setLineDash([]);
 
@@ -575,26 +715,22 @@ function drawMultiLineChart(canvas, seriesMap, opts = {}) {
   ctx.font = "11px 'Share Tech Mono', monospace";
   series.forEach((s) => {
     ctx.fillStyle = s.color; ctx.fillRect(lx, 8, 8, 8);
-    ctx.fillStyle = "#93b2c4"; ctx.fillText(`${s.label} (${s.points[s.points.length - 1].value >= 0 ? "+" : ""}$${s.points[s.points.length - 1].value.toFixed(2)})`, lx + 12, 16);
+    ctx.fillStyle = cssVar("--ink-2"); ctx.fillText(`${s.label} (${s.points[s.points.length - 1].value >= 0 ? "+" : ""}$${s.points[s.points.length - 1].value.toFixed(2)})`, lx + 12, 16);
     lx += 24 + ctx.measureText(s.label).width;
   });
 }
 
-// ---- settings / system configuration, read-only ----------------------------------------
 function renderConfigPanel(agentEntries) {
   if (!agentEntries.length) return "";
   return agentEntries.map(([strategy, status]) => {
     const cfg = status.config || {};
     const rows = Object.entries(cfg).map(([k, v]) =>
       `<tr><td class="param-name">${esc(k)}</td><td class="param-value">${esc(v)}</td></tr>`).join("");
-    return `<div style="margin-bottom:18px"><div class="label" style="color:var(--accent);font-family:var(--tech-font);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">${esc(strategy)}</div>` +
+    return `<div style="margin-bottom:18px"><div class="section-label">${esc(strategy)}</div>` +
       `<table class="config"><thead><tr><th>Parameter</th><th>Value</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }).join("");
 }
 
-// ---- quarterly re-validation panel -----------------------------------------------------
-// /api/revalidation returns runs newest-first, so the first entry seen per strategy while
-// walking the list IS that strategy's latest run -- no separate sort/group step needed.
 function renderRevalidationPanel(runs) {
   if (!runs.length) return { html: "", hasData: false };
 
@@ -630,41 +766,117 @@ function renderRevalidationPanel(runs) {
   };
 }
 
+// ---- agent analysis tab (2026-09-23, "make the bots analyze the mistakes on the failed
+// trades" + "a tab show the agents analysis progress") ----------------------------------
+// Same features paper_trade_alpaca.py captures per strategy at entry -- see that file's
+// check_breakout_symbol / rsi pending-entry loop for where these come from.
+const ANALYSIS_FEATURES = {
+  breakout: ["breakout_margin_pct", "volume_ratio", "trend_strength_pct"],
+  rsi: ["rsi_at_entry"],
+};
+
+function featureStats(trades, feature) {
+  const values = trades.map((t) => t[feature]).filter((v) => v != null);
+  if (!values.length) return null;
+  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return { n: values.length, avg, median };
+}
+
+function renderAnalysisTab(closedTrades) {
+  if (!closedTrades || !closedTrades.length) {
+    return `<div class="empty">No real closed trades yet — this fills in automatically as trades close.<br>An open position that hasn't exited yet doesn't count as a win or a loss.</div>`;
+  }
+
+  const strategies = [...new Set(closedTrades.map((t) => t.strategy))];
+  return strategies.map((strat) => {
+    const trades = closedTrades.filter((t) => t.strategy === strat);
+    const winners = trades.filter((t) => t.won);
+    const losers = trades.filter((t) => !t.won);
+    const winRate = 100 * winners.length / trades.length;
+    const avgPnl = trades.reduce((s, t) => s + t.pnl_pct, 0) / trades.length;
+    const features = ANALYSIS_FEATURES[strat] || [];
+
+    const tiles = [
+      ["Closed trades", trades.length, `${winners.length} won / ${losers.length} lost`, "up"],
+      ["Win rate", winRate.toFixed(1) + "%", "", winRate >= 50 ? "up" : "down"],
+      ["Avg P&L / trade", (avgPnl >= 0 ? "+" : "") + avgPnl.toFixed(2) + "%", "across all closed trades", avgPnl >= 0 ? "up" : "down"],
+    ].map(([label, value, foot, tone]) =>
+      `<div class="tile"><div class="label">${esc(label)}</div><div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
+    ).join("");
+
+    const featureSection = !losers.length
+      ? `<p class="hint">No losers yet for ${esc(strat)} — nothing to compare the winning setups against.</p>`
+      : "<table class=\"data\"><thead><tr><th>Entry feature</th><th>Winners avg</th><th>Losers avg</th></tr></thead><tbody>" +
+        features.map((f) => {
+          const w = featureStats(winners, f), l = featureStats(losers, f);
+          return `<tr><td>${esc(f)}</td><td>${w ? fmtNum(w.avg) : "—"}</td><td>${l ? fmtNum(l.avg) : "—"}</td></tr>`;
+        }).join("") + "</tbody></table>";
+
+    const tradeRows = trades.slice().reverse().map((t) =>
+      `<tr><td>${esc(t.symbol)}</td><td>${esc(t.entry_date)} → ${esc(t.exit_date)}</td>` +
+      `<td>${fmtNum(t.entry_price)} → ${fmtNum(t.exit_price)}</td>` +
+      `<td class="${t.won ? "side-buy" : "side-sell"}">${t.won ? "WIN" : "LOSS"} ${t.pnl_pct >= 0 ? "+" : ""}${fmtNum(t.pnl_pct)}%</td>` +
+      `<td>${esc(t.exit_reason)}</td></tr>`
+    ).join("");
+
+    return `<div style="margin-bottom:28px">
+      <div class="section-label">${esc(strat)}</div>
+      <div class="tiles">${tiles}</div>
+      <div style="margin-top:16px">${featureSection}</div>
+      <table class="data" style="margin-top:16px"><thead><tr><th>Symbol</th><th>Entry → Exit date</th><th>Price</th><th>Outcome</th><th>Reason</th></tr></thead><tbody>${tradeRows}</tbody></table>
+    </div>`;
+  }).join("");
+}
+
+function redrawCharts() {
+  if (!lastChartData) return;
+  const { results, liveTrades } = lastChartData;
+  drawMultiLineChart($("#pnlChart"), computePnlSeries(liveTrades));
+  if (results && results.available !== false) {
+    drawLineChart($("#equityChart"), results.equity_curve, "value", { stroke: "#6fe3a0", fill: "rgba(46,204,113,0.18)" });
+    drawLineChart($("#priceChart"), results.price_series, "close", {
+      stroke: "#9fb4c7", fill: "rgba(159,180,199,0.10)", markers: results.trade_log,
+    });
+  }
+}
+
 async function load() {
-  let results, agentsData, liveTrades, revalidationRuns;
+  let results, agentsData, liveTrades, revalidationRuns, closedTrades;
   try {
-    [results, agentsData, liveTrades, revalidationRuns] = await Promise.all([
+    [results, agentsData, liveTrades, revalidationRuns, closedTrades] = await Promise.all([
       fetch("/api/results").then((r) => r.json()),
       fetch("/api/agents").then((r) => r.json()),
       fetch("/api/live_trades").then((r) => r.json()),
       fetch("/api/revalidation").then((r) => r.json()).catch(() => []),
+      fetch("/api/closed_trades").then((r) => r.json()).catch(() => []),
     ]);
   } catch (e) {
     $("#agentText").textContent = "dashboard API unreachable";
     return;
   }
 
+  lastChartData = { results, liveTrades };
+
   const dot = $("#agentDot"), text = $("#agentText");
-  const liveTradesPanel = $("#liveTradesPanel");
-  const resultsOverTimePanel = $("#resultsOverTimePanel");
-  const settingsPanel = $("#settingsPanel");
-  const revalidationPanel = $("#revalidationPanel");
   const agentEntries = Object.entries(agentsData || {}).filter(([, s]) => s.connected);
 
-  // Independent of whether an agent is currently connected -- this is historical audit
-  // data, useful to see even if the live agent process happens to be between runs.
   const revalidation = renderRevalidationPanel(revalidationRuns || []);
-  revalidationPanel.style.display = revalidation.hasData ? "" : "none";
+  $("#revalidationPanel").style.display = revalidation.hasData ? "" : "none";
   if (revalidation.hasData) $("#revalidationWrap").innerHTML = revalidation.html;
+
+  $("#analysisWrap").innerHTML = renderAnalysisTab(closedTrades);
 
   if (agentEntries.length) {
     dot.classList.add("live");
     text.textContent = agentEntries.length === 1
       ? "agent connected — " + (agentEntries[0][1].account_type || "paper")
       : `${agentEntries.length} agents connected — paper`;
-    liveTradesPanel.style.display = "";
-    resultsOverTimePanel.style.display = "";
-    settingsPanel.style.display = "";
+    $("#agentsEmpty").style.display = "none";
+    $("#liveTradesPanel").style.display = "";
+    $("#settingsPanel").style.display = "";
 
     $("#agentsWrap").innerHTML = agentEntries.map(([strategy, status], i) => renderAgentPanel(strategy, status, i + 1)).join("");
     hasRenderedAgentsOnce = true;
@@ -677,15 +889,13 @@ async function load() {
         liveRows.map((t) => `<tr><td>${esc(t.date)}</td><td>${esc(t.strategy || "—")}</td><td>${esc(t.symbol || "—")}</td><td class="side-${t.side.toLowerCase()}">${esc(t.side)}</td>` +
           `<td>${fmtNum(t.price)}</td><td>${esc(t.size)}</td><td>${esc(t.reason || "")}</td></tr>`).join("") +
         "</tbody></table>";
-
-    drawMultiLineChart($("#pnlChart"), computePnlSeries(liveTrades));
   } else {
     dot.classList.remove("live");
     text.textContent = "no live agent — backtest mode";
     $("#agentsWrap").innerHTML = "";
-    liveTradesPanel.style.display = "none";
-    resultsOverTimePanel.style.display = "none";
-    settingsPanel.style.display = "none";
+    $("#agentsEmpty").style.display = "";
+    $("#liveTradesPanel").style.display = "none";
+    $("#settingsPanel").style.display = "none";
   }
 
   updateMascot(agentEntries.map(([strategy, status]) => ({ strategy, ...status })));
@@ -693,16 +903,10 @@ async function load() {
   if (results.available === false) {
     $("#tiles").innerHTML = `<div class="empty">${esc(results.reason)}</div>`;
     $("#tradeTableWrap").innerHTML = "";
+    redrawCharts();
     return;
   }
 
-  // Strategy-agnostic params footer -- was hardcoded to "MA {fast}/{slow}" from this
-  // dashboard's MACrossover-only days, which showed "MA null/null" for every other
-  // strategy (Breakout has no fast_period/slow_period at all). results.params has
-  // whatever the actual strategy run used, whatever its param names are.
-  // Drop size/allow_short (shown elsewhere) and any 0/null value -- this project's own
-  // convention for an "off" filter (see strategies/breakout.py's min_volume_ratio etc.),
-  // so the footer reads as "what's actually active" rather than every param that exists.
   const paramsFoot = Object.entries(results.params || {})
     .filter(([k, v]) => k !== "size" && k !== "allow_short" && v !== 0 && v !== null)
     .map(([k, v]) => `${k}=${v}`).join(" ") + (results.allow_short ? " · long+short" : " · long only");
@@ -718,10 +922,7 @@ async function load() {
     `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
   ).join("");
 
-  drawLineChart($("#equityChart"), results.equity_curve, "value", { stroke: "#6fe3a0", fill: "rgba(46,204,113,0.18)" });
-  drawLineChart($("#priceChart"), results.price_series, "close", {
-    stroke: "#9fb4c7", fill: "rgba(159,180,199,0.10)", markers: results.trade_log,
-  });
+  redrawCharts();
 
   const rows = (results.trade_log || []).slice().reverse();
   if (!rows.length) {
@@ -737,7 +938,7 @@ async function load() {
 
 load();
 setInterval(load, 5000);
-window.addEventListener("resize", load);
+window.addEventListener("resize", redrawCharts);
 </script>
 </body>
 </html>
