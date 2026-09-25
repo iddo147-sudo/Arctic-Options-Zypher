@@ -79,6 +79,10 @@ TRADES_PATH = WEBAPP_DIR / "agent_trades.json"
 # features with the real outcome. Local-dev fallback only -- see webapp/main.py's
 # /api/report_closed_trade for the Postgres path used once DASHBOARD_URL is configured.
 CLOSED_TRADES_PATH = WEBAPP_DIR / "agent_closed_trades.json"
+# 2026-09-26, explicit user request -- hit +4% one month, "if we make 4% a month and play it
+# safe after then we can control profit": local-dev fallback only, mirrors kill_switch's own
+# split -- see webapp/main.py's /api/profit_lock for the Postgres path.
+PROFIT_LOCK_PATH = WEBAPP_DIR / "profit_lock_state.json"
 
 
 def status_path(strategy: str) -> pathlib.Path:
@@ -179,6 +183,66 @@ def check_kill_switch(equity: float) -> tuple[bool, str | None]:
                   f"${STARTING_EQUITY:,.0f} starting balance")
         _report("/api/kill_switch/trip", {"equity": equity, "reason": reason})
         notify_phone("KILL SWITCH TRIPPED -- trading halted", reason, tags="rotating_light")
+        return True, reason
+
+    return False, None
+
+
+# Profit lock (2026-09-26, explicit user request -- hit +4% one month on Breakout, "if we make
+# 4% a month and play it safe after then we can control profit"): once REALIZED account equity
+# gains this much in a calendar month, measured against equity at the start of that month, no
+# NEW entries fire for the rest of it -- same "don't force anything, just stop adding risk"
+# stance as the kill switch above (existing open positions are left alone, still monitored for
+# their own normal exits). Both strategies share one Alpaca account, so this is account-wide,
+# not per-strategy, same reasoning as the kill switch. Unlike the kill switch, this resets
+# automatically at the start of the next month -- a repeating monthly target, not a one-time
+# floor that needs a human to clear before trading can resume.
+PROFIT_LOCK_TARGET_PCT = float(os.environ.get("PROFIT_LOCK_TARGET_PCT", "0.04"))
+
+
+def _load_local_profit_lock() -> dict:
+    if PROFIT_LOCK_PATH.exists():
+        return json.loads(PROFIT_LOCK_PATH.read_text())
+    return {}
+
+
+def check_profit_lock(equity: float) -> tuple[bool, str | None]:
+    """Returns (halted, reason). Unlike check_kill_switch, the local (no-dashboard) path still
+    persists to a file -- month_start_equity has to survive between runs no matter what, there's
+    no "just check this run's number against a fixed floor" shortcut like the kill switch has."""
+    current_month = datetime.date.today().strftime("%Y-%m")
+
+    if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
+        state = _load_local_profit_lock()
+        if state.get("month") != current_month:
+            state = {"month": current_month, "month_start_equity": equity, "locked": False}
+            PROFIT_LOCK_PATH.write_text(json.dumps(state, indent=2))
+            return False, None
+        if state.get("locked"):
+            return True, f"profit lock active (local run) -- hit +{PROFIT_LOCK_TARGET_PCT:.0%} this month"
+        gain_pct = (equity - state["month_start_equity"]) / state["month_start_equity"]
+        if gain_pct >= PROFIT_LOCK_TARGET_PCT:
+            state["locked"] = True
+            PROFIT_LOCK_PATH.write_text(json.dumps(state, indent=2))
+            return True, f"up {gain_pct:.1%} this month (local run, not persisted to dashboard)"
+        return False, None
+
+    state = _get("/api/profit_lock") or {}
+    if state.get("month") != current_month:
+        state = {"month": current_month, "month_start_equity": equity, "locked": False}
+        _report("/api/profit_lock/update", state)
+        return False, None
+    if state.get("locked"):
+        return True, state.get("reason") or "profit lock active"
+
+    gain_pct = (equity - state["month_start_equity"]) / state["month_start_equity"]
+    if gain_pct >= PROFIT_LOCK_TARGET_PCT:
+        reason = (f"up {gain_pct:.1%} this month (target {PROFIT_LOCK_TARGET_PCT:.0%}) -- "
+                  f"no new entries until next month")
+        state["locked"] = True
+        state["reason"] = reason
+        _report("/api/profit_lock/update", state)
+        notify_phone("PROFIT LOCK -- new entries paused", reason, tags="moneybag")
         return True, reason
 
     return False, None
@@ -367,9 +431,9 @@ def check_breakout_symbol(trading, data_client, symbol: str, shares: int, entry_
     if current_qty == 0:
         entry_dates.pop(symbol, None)  # flat -- any stale entry_date no longer applies
         if halted:
-            print(f"{symbol}: kill switch active -- no new entries.")
+            print(f"{symbol}: entries halted -- no new entries.")
             return {"position": 0, "close": round(today_close, 2), "trend_ma": round(trend_ma, 2),
-                    "highest": round(highest, 2), "last_action": "holding flat (kill switch active)"}
+                    "highest": round(highest, 2), "last_action": "holding flat (entries halted)"}
         in_uptrend = today_close > trend_ma
         broke_out = today_close > highest
         if not (in_uptrend and broke_out):
@@ -459,9 +523,9 @@ def check_rsi_symbol(trading, data_client, symbol: str, shares: int, entry_dates
     if current_qty == 0:
         entry_dates.pop(symbol, None)
         if halted:
-            print(f"{symbol}: kill switch active -- no new entries.")
+            print(f"{symbol}: entries halted -- no new entries.")
             return {"position": 0, "close": round(today_close, 2), "rsi": rsi_value,
-                    "last_action": "holding flat (kill switch active)"}
+                    "last_action": "holding flat (entries halted)"}
         if rsi_value >= RSI_PARAMS["oversold"]:
             print(f"{symbol}: no entry -- RSI {rsi_value} not oversold. Holding flat.")
             return {"position": 0, "close": round(today_close, 2), "rsi": rsi_value,
@@ -560,6 +624,13 @@ def run(strategy: str, symbols: list[str], shares: int):
     if halted:
         print(f"[{strategy}] KILL SWITCH ACTIVE -- {halt_reason}. No new entries this run "
               f"(existing positions still monitored for exits).")
+    else:
+        # Only check the profit lock when the kill switch hasn't already halted things --
+        # halt_reason should say whichever ACTUALLY applies, not silently prefer one.
+        halted, halt_reason = check_profit_lock(equity)
+        if halted:
+            print(f"[{strategy}] PROFIT LOCK ACTIVE -- {halt_reason}. No new entries this run "
+                  f"(existing positions still monitored for exits).")
 
     entry_dates = load_entry_dates(strategy)
     entry_features = load_entry_features(strategy)
@@ -624,8 +695,11 @@ def run(strategy: str, symbols: list[str], shares: int):
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "buying_power": buying_power,
         "equity": equity,
-        "kill_switch_active": halted,
-        "kill_switch_reason": halt_reason,
+        # Generic name, not "kill_switch_active" -- 2026-09-26: halted can now come from EITHER
+        # the kill switch or the profit lock, and this field doesn't distinguish which. Nothing
+        # in the dashboard reads this key yet, so this rename is free.
+        "entries_halted": halted,
+        "entries_halted_reason": halt_reason,
         "last_action": summary,
         "last_order_id": fired[-1][2] if fired else None,
         "tickers": tickers,

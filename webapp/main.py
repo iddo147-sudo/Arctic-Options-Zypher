@@ -67,6 +67,7 @@ RESULTS_PATH = BASE_DIR / "results.json"
 TRADES_PATH = BASE_DIR / "agent_trades.json"  # local-dev fallback only when DATABASE_URL is unset
 CLOSED_TRADES_PATH = BASE_DIR / "agent_closed_trades.json"  # local-dev fallback only when DATABASE_URL is unset
 KILL_SWITCH_PATH = BASE_DIR / "kill_switch_state.json"  # local-dev fallback only when DATABASE_URL is unset
+PROFIT_LOCK_PATH = BASE_DIR / "profit_lock_state.json"  # local-dev fallback only when DATABASE_URL is unset
 REVALIDATION_PATH = BASE_DIR / "revalidation_runs.json"  # local-dev fallback only when DATABASE_URL is unset
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -163,10 +164,33 @@ def _ensure_kill_switch_table():
         conn.commit()
 
 
+def _ensure_profit_lock_table():
+    """2026-09-26, explicit user request -- hit +4% one month, "if we make 4% a month and play
+    it safe after then we can control profit": one row, overwritten wholesale by
+    paper_trade_alpaca.py's check_profit_lock() each time month/locked state changes -- unlike
+    kill_switch, there's no separate trip/reset split here, since a monthly target is meant to
+    reset itself automatically (see that function's own docstring)."""
+    if not DATABASE_URL:
+        return
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS profit_lock (
+                id TEXT PRIMARY KEY,
+                month TEXT,
+                month_start_equity NUMERIC,
+                locked BOOLEAN NOT NULL DEFAULT FALSE,
+                reason TEXT,
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        conn.commit()
+
+
 try:
     _ensure_trades_table()
     _ensure_closed_trades_table()
     _ensure_kill_switch_table()
+    _ensure_profit_lock_table()
     _ensure_revalidation_table()
 except psycopg2.Error as e:
     # Don't take down the whole dashboard over a DB hiccup at startup -- a real connectivity
@@ -588,6 +612,60 @@ def reset_kill_switch():
 
     if KILL_SWITCH_PATH.exists():
         KILL_SWITCH_PATH.unlink()
+    return {"ok": True}
+
+
+# ---- profit lock (2026-09-26, explicit user request -- "if we make 4% a month and play it
+# safe after then we can control profit") -----------------------------------------------
+# Both require_agent, unlike kill_switch's trip/reset split -- there's no human-review step
+# here by design. A monthly profit target is meant to repeat on its own every month, not force
+# someone to manually clear it the way a real loss floor should (see paper_trade_alpaca.py's
+# check_profit_lock() docstring for the full reasoning). The agent both reads and writes this
+# state itself, wholesale, each run.
+
+
+@app.get("/api/profit_lock", dependencies=[Depends(require_agent)])
+def profit_lock_status():
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute("SELECT month, month_start_equity, locked, reason FROM profit_lock WHERE id = 'global'")
+                row = cur.fetchone()
+            if row:
+                return {"month": row[0], "month_start_equity": float(row[1]) if row[1] is not None else None,
+                        "locked": row[2], "reason": row[3]}
+            return {}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres read failed, falling back to local file: {e}")
+
+    if not PROFIT_LOCK_PATH.exists():
+        return {}
+    return json.loads(PROFIT_LOCK_PATH.read_text())
+
+
+@app.post("/api/profit_lock/update", dependencies=[Depends(require_agent)])
+async def update_profit_lock(request: Request):
+    """Wholesale overwrite -- the agent always sends its full intended state (month,
+    month_start_equity, locked, and reason once locked), not a partial patch."""
+    state = await request.json()
+
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO profit_lock (id, month, month_start_equity, locked, reason, updated_at) "
+                    "VALUES ('global', %s, %s, %s, %s, now()) "
+                    "ON CONFLICT (id) DO UPDATE SET month = EXCLUDED.month, "
+                    "month_start_equity = EXCLUDED.month_start_equity, locked = EXCLUDED.locked, "
+                    "reason = EXCLUDED.reason, updated_at = now()",
+                    (state.get("month"), state.get("month_start_equity"), state.get("locked", False), state.get("reason")),
+                )
+                conn.commit()
+            return {"ok": True}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
+    PROFIT_LOCK_PATH.write_text(json.dumps(state, indent=2))
     return {"ok": True}
 
 

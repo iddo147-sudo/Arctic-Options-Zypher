@@ -374,20 +374,15 @@ table.config td.param-value { color: var(--ink); font-weight: 600; }
   </nav>
 
   <!-- ===================== OVERVIEW ===================== -->
+  <!-- 2026-09-23, explicit user request -- "remove all the fake data of past years, looks
+       messy": this used to open on the one-time 2021-2026 backtest simulation (a multi-year
+       equity curve + price chart), which read as stale/confusing next to the live tabs next
+       to it. Replaced with a live summary built from the SAME real data the Agents/Analysis
+       tabs already have -- the backtest's own numbers still exist (see the Settings tab's
+       config, and History's "Backtest trade log"), just not as the first thing this dashboard
+       shows anymore. -->
   <div class="tab-panel" data-tab-panel="overview">
-    <div class="tiles" id="tiles"></div>
-
-    <section class="panel">
-      <h2>Equity curve</h2>
-      <p class="hint">Portfolio value over the backtest window. Flat stretches are the strategy sitting out; the point of this project is not trusting the slope until it's proven against unseen data.</p>
-      <canvas id="equityChart" height="220"></canvas>
-    </section>
-
-    <section class="panel">
-      <h2>Price &amp; trades</h2>
-      <p class="hint">Green up = buy, red down = sell. A cluster of flips right at a turn means the strategy is whipsawing, not predicting.</p>
-      <canvas id="priceChart" height="220"></canvas>
-    </section>
+    <div class="tiles" id="overviewTiles"></div>
   </div>
 
   <!-- ===================== AGENTS ===================== -->
@@ -447,7 +442,6 @@ table.config td.param-value { color: var(--ink); font-weight: 600; }
 
 <script>
 const $ = (s) => document.querySelector(s);
-const fmtPct = (v) => (v == null ? "—" : v.toFixed(2) + "%");
 const fmtNum = (v, d=2) => (v == null ? "—" : v.toFixed(d));
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -497,64 +491,6 @@ document.querySelectorAll(".tab-btn").forEach((b) => b.addEventListener("click",
 })();
 
 let lastChartData = null; // set by load(), re-used by redrawCharts() on a theme flip
-
-function drawLineChart(canvas, points, valueKey, opts = {}) {
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = canvas.clientHeight || 220;
-  canvas.width = w * dpr; canvas.height = h * dpr;
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, h);
-
-  if (!points || !points.length) {
-    ctx.fillStyle = cssVar("--ink-3"); ctx.font = "13px sans-serif";
-    ctx.fillText("No data yet — run backtest.py", 12, h / 2);
-    return;
-  }
-
-  const values = points.map((p) => p[valueKey]);
-  const min = Math.min(...values), max = Math.max(...values);
-  const pad = (max - min) * 0.08 || 1;
-  const yMin = min - pad, yMax = max + pad;
-  const xStep = w / Math.max(1, points.length - 1);
-  const yOf = (v) => h - ((v - yMin) / (yMax - yMin)) * h;
-
-  ctx.beginPath();
-  ctx.moveTo(0, h);
-  points.forEach((p, i) => ctx.lineTo(i * xStep, yOf(p[valueKey])));
-  ctx.lineTo(w, h);
-  ctx.closePath();
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, opts.fill || "rgba(46,204,113,0.18)");
-  grad.addColorStop(1, "rgba(46,204,113,0.0)");
-  ctx.fillStyle = grad;
-  ctx.fill();
-
-  ctx.beginPath();
-  points.forEach((p, i) => {
-    const x = i * xStep, y = yOf(p[valueKey]);
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.strokeStyle = opts.stroke || "#6fe3a0";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-
-  if (opts.markers) {
-    for (const m of opts.markers) {
-      const idx = points.findIndex((p) => p.date === m.date);
-      if (idx < 0) continue;
-      const x = idx * xStep, y = yOf(points[idx][valueKey]);
-      ctx.beginPath();
-      ctx.fillStyle = m.side === "BUY" ? "#2ecc71" : "#e14b4b";
-      if (m.side === "BUY") {
-        ctx.moveTo(x, y - 7); ctx.lineTo(x - 5, y + 3); ctx.lineTo(x + 5, y + 3);
-      } else {
-        ctx.moveTo(x, y + 7); ctx.lineTo(x - 5, y - 3); ctx.lineTo(x + 5, y - 3);
-      }
-      ctx.closePath(); ctx.fill();
-    }
-  }
-}
 
 function relTime(iso) {
   const diff = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -833,14 +769,41 @@ function renderAnalysisTab(closedTrades) {
 
 function redrawCharts() {
   if (!lastChartData) return;
-  const { results, liveTrades } = lastChartData;
-  drawMultiLineChart($("#pnlChart"), computePnlSeries(liveTrades));
-  if (results && results.available !== false) {
-    drawLineChart($("#equityChart"), results.equity_curve, "value", { stroke: "#6fe3a0", fill: "rgba(46,204,113,0.18)" });
-    drawLineChart($("#priceChart"), results.price_series, "close", {
-      stroke: "#9fb4c7", fill: "rgba(159,180,199,0.10)", markers: results.trade_log,
-    });
+  drawMultiLineChart($("#pnlChart"), computePnlSeries(lastChartData.liveTrades));
+}
+
+// ---- overview tiles (2026-09-23, replaced the old multi-year backtest chart -- see the
+// Overview tab-panel's own HTML comment for why) -- a live pulse built from the same data
+// the Agents/Analysis tabs already have, plus one compact reference to the validated backtest
+// instead of a full 5-year chart. ------------------------------------------------------
+function renderOverviewTiles(agentEntries, closedTrades, results) {
+  // Equity is shared across agents (one Alpaca account) -- any connected agent's own reading
+  // of it is the real number, same reasoning as renderAgentPanel's own equity tile.
+  const equity = agentEntries.length ? agentEntries[0][1].equity : null;
+  const STARTING_EQUITY = 100000;
+  const equityTone = equity == null ? "up" : (equity >= STARTING_EQUITY ? "up" : "down");
+  const equityFoot = equity != null
+    ? (equity >= STARTING_EQUITY ? "+" : "") + (equity - STARTING_EQUITY).toLocaleString(undefined, {maximumFractionDigits: 2}) + " vs $100k start"
+    : "no live agent yet";
+
+  const trades = closedTrades || [];
+  const wins = trades.filter((t) => t.won).length;
+  const winRate = trades.length ? 100 * wins / trades.length : null;
+
+  const tiles = [
+    ["Total equity", equity != null ? "$" + Number(equity).toLocaleString(undefined, {maximumFractionDigits: 0}) : "—", equityFoot, equityTone],
+    ["Live agents", agentEntries.length, agentEntries.map(([s]) => s).join(", ") || "none connected yet", agentEntries.length ? "up" : "down"],
+    ["Real closed trades", trades.length, trades.length ? `${wins} won / ${trades.length - wins} lost` : "none yet", "up"],
+    ["Real win rate", winRate != null ? winRate.toFixed(1) + "%" : "—", "full breakdown in the Analysis tab", winRate == null ? "up" : (winRate >= 50 ? "up" : "down")],
+  ];
+  if (results && results.available !== false && results.sharpe != null) {
+    tiles.push(["Validated backtest", fmtNum(results.sharpe, 3), "Sharpe (" + (results.ticker || "") + ") -- full run under History", "up"]);
   }
+
+  return tiles.map(([label, value, foot, tone]) =>
+    `<div class="tile"><div class="label">${esc(label)}</div>` +
+    `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
+  ).join("");
 }
 
 async function load() {
@@ -900,29 +863,13 @@ async function load() {
 
   updateMascot(agentEntries.map(([strategy, status]) => ({ strategy, ...status })));
 
+  $("#overviewTiles").innerHTML = renderOverviewTiles(agentEntries, closedTrades, results);
+  redrawCharts();
+
   if (results.available === false) {
-    $("#tiles").innerHTML = `<div class="empty">${esc(results.reason)}</div>`;
     $("#tradeTableWrap").innerHTML = "";
-    redrawCharts();
     return;
   }
-
-  const paramsFoot = Object.entries(results.params || {})
-    .filter(([k, v]) => k !== "size" && k !== "allow_short" && v !== 0 && v !== null)
-    .map(([k, v]) => `${k}=${v}`).join(" ") + (results.allow_short ? " · long+short" : " · long only");
-
-  $("#tiles").innerHTML = [
-    ["Return", fmtPct(results.return_pct), results.ticker, results.return_pct >= 0 ? "up" : "down"],
-    ["Max drawdown", fmtPct(results.max_drawdown_pct), "peak to trough", "down"],
-    ["Sharpe", fmtNum(results.sharpe, 3), "annualized", results.sharpe >= 0 ? "up" : "down"],
-    ["Win rate", results.win_rate_pct != null ? fmtPct(results.win_rate_pct) : "—", results.won + " won / " + results.lost + " lost", "up"],
-    ["Trades", results.total_trades, paramsFoot, "up"],
-  ].map(([label, value, foot, tone]) =>
-    `<div class="tile"><div class="label">${esc(label)}</div>` +
-    `<div class="value ${tone}">${esc(value)}</div><div class="foot">${esc(foot)}</div></div>`
-  ).join("");
-
-  redrawCharts();
 
   const rows = (results.trade_log || []).slice().reverse();
   if (!rows.length) {
