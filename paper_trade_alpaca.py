@@ -317,18 +317,30 @@ def log_closed_trade(strategy, symbol, entry_date, exit_date, entry_price, exit_
     _report("/api/report_closed_trade", trade)
 
 
-def load_entry_dates(strategy: str) -> dict:
-    path = position_state_path(strategy)
-    if path.exists():
-        return json.loads(path.read_text())
-    return {}
+def load_position_state(strategy: str) -> tuple[dict, dict]:
+    """Returns (entry_dates, entry_features). 2026-09-29, real incident -- this runs as a
+    Railway Cron Schedule service (see module docstring), so a purely-local file never
+    actually survived between the run that opened a position and the later run that closed
+    it (that container is gone). Same "remote when configured, local file otherwise" shape as
+    check_profit_lock -- see webapp/main.py's /api/position_state/<strategy> for the Postgres
+    path used once DASHBOARD_URL/AGENT_REPORT_TOKEN are set."""
+    if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
+        entry_dates = json.loads(position_state_path(strategy).read_text()) if position_state_path(strategy).exists() else {}
+        entry_features = json.loads(entry_features_path(strategy).read_text()) if entry_features_path(strategy).exists() else {}
+        return entry_dates, entry_features
+
+    state = _get(f"/api/position_state/{strategy}") or {}
+    return state.get("entry_dates", {}), state.get("entry_features", {})
 
 
-def load_entry_features(strategy: str) -> dict:
-    path = entry_features_path(strategy)
-    if path.exists():
-        return json.loads(path.read_text())
-    return {}
+def save_position_state(strategy: str, entry_dates: dict, entry_features: dict) -> None:
+    if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
+        position_state_path(strategy).write_text(json.dumps(entry_dates, indent=2))
+        entry_features_path(strategy).write_text(json.dumps(entry_features, indent=2))
+        return
+
+    _report(f"/api/position_state/{strategy}/update",
+            {"entry_dates": entry_dates, "entry_features": entry_features})
 
 
 def get_clients() -> tuple[TradingClient, StockHistoricalDataClient]:
@@ -632,8 +644,7 @@ def run(strategy: str, symbols: list[str], shares: int):
             print(f"[{strategy}] PROFIT LOCK ACTIVE -- {halt_reason}. No new entries this run "
                   f"(existing positions still monitored for exits).")
 
-    entry_dates = load_entry_dates(strategy)
-    entry_features = load_entry_features(strategy)
+    entry_dates, entry_features = load_position_state(strategy)
     tickers = {}
     fired = []  # (symbol, action_text, order_id) for whichever symbols actually traded this run
     for symbol in symbols:
@@ -680,8 +691,7 @@ def run(strategy: str, symbols: list[str], shares: int):
                     fired.append((symbol, tickers[symbol]["last_action"], result["order_id"]))
                 tickers[symbol].pop("_pending_entry", None)
 
-    position_state_path(strategy).write_text(json.dumps(entry_dates, indent=2))
-    entry_features_path(strategy).write_text(json.dumps(entry_features, indent=2))
+    save_position_state(strategy, entry_dates, entry_features)
 
     summary = "; ".join(text for _, text, _ in fired) if fired else f"checked {len(symbols)} tickers -- no setups"
     payload = {

@@ -148,6 +148,29 @@ def _ensure_closed_trades_table():
         conn.commit()
 
 
+def _ensure_position_state_table():
+    """2026-09-29, real incident -- analyze_live_trades.py showed the first two live breakout
+    trades (TSLA, META) both reporting entry_date=None. Root cause: paper_trade_alpaca.py runs
+    as a Railway Cron Schedule service (see its own module docstring) -- every scheduled run
+    starts in a brand-new container with no disk left over from the last one, so entry_dates/
+    entry_features (previously local-file-only) never actually survived between the day a
+    position opened and the day it closed. That also silently broke the max_hold_days exit
+    (bars_held ends up None -> that timeout check never fires), not just the reporting. One row
+    per strategy, both dicts wholesale-overwritten each run -- same shape as profit_lock above."""
+    if not DATABASE_URL:
+        return
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS position_state (
+                strategy TEXT PRIMARY KEY,
+                entry_dates JSONB NOT NULL DEFAULT '{}'::jsonb,
+                entry_features JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        conn.commit()
+
+
 def _ensure_kill_switch_table():
     if not DATABASE_URL:
         return
@@ -189,6 +212,7 @@ def _ensure_profit_lock_table():
 try:
     _ensure_trades_table()
     _ensure_closed_trades_table()
+    _ensure_position_state_table()
     _ensure_kill_switch_table()
     _ensure_profit_lock_table()
     _ensure_revalidation_table()
@@ -204,6 +228,16 @@ VALID_STRATEGIES = re.compile(r"^[a-z_]{1,32}$")
 
 def agent_status_path(strategy: str) -> pathlib.Path:
     return BASE_DIR / f"agent_status_{strategy}.json"
+
+
+# Same local filenames paper_trade_alpaca.py already used pre-Postgres, so a Postgres read/
+# write failure still falls back to something consistent with local dev's own behavior.
+def position_state_local_path(strategy: str) -> pathlib.Path:
+    return BASE_DIR / f"agent_position_state_{strategy}.json"
+
+
+def entry_features_local_path(strategy: str) -> pathlib.Path:
+    return BASE_DIR / f"agent_entry_features_{strategy}.json"
 
 # Same reasoning as the Hardcore Arctic telemetry dashboard's own require_reader: this is
 # about to go on a public Railway URL, and trading strategy/performance data isn't something
@@ -666,6 +700,71 @@ async def update_profit_lock(request: Request):
             print(f"[warn] Postgres write failed, falling back to local file: {e}")
 
     PROFIT_LOCK_PATH.write_text(json.dumps(state, indent=2))
+    return {"ok": True}
+
+
+# ---- position state (2026-09-29, real incident -- see _ensure_position_state_table's own
+# docstring) --------------------------------------------------------------------------------
+# entry_dates/entry_features have to survive between paper_trade_alpaca.py's scheduled runs
+# (each its own fresh container) for the max_hold_days exit and analyze_live_trades.py's real
+# numbers to work at all. Wholesale overwrite each run, same GET/POST-pair shape as profit
+# lock above, just keyed by strategy instead of one global row.
+
+
+@app.get("/api/position_state/{strategy}", dependencies=[Depends(require_agent)])
+def position_state(strategy: str):
+    if not VALID_STRATEGIES.match(strategy):
+        raise HTTPException(status_code=400, detail="invalid strategy name")
+
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT entry_dates, entry_features FROM position_state WHERE strategy = %s",
+                    (strategy,),
+                )
+                row = cur.fetchone()
+            if row:
+                return {"entry_dates": row[0] or {}, "entry_features": row[1] or {}}
+            return {"entry_dates": {}, "entry_features": {}}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres read failed, falling back to local file: {e}")
+
+    entry_dates = (json.loads(position_state_local_path(strategy).read_text())
+                   if position_state_local_path(strategy).exists() else {})
+    entry_features = (json.loads(entry_features_local_path(strategy).read_text())
+                       if entry_features_local_path(strategy).exists() else {})
+    return {"entry_dates": entry_dates, "entry_features": entry_features}
+
+
+@app.post("/api/position_state/{strategy}/update", dependencies=[Depends(require_agent)])
+async def update_position_state(strategy: str, request: Request):
+    """Wholesale overwrite -- the agent always sends its full current entry_dates/
+    entry_features for this strategy each run, not a partial patch."""
+    if not VALID_STRATEGIES.match(strategy):
+        raise HTTPException(status_code=400, detail="invalid strategy name")
+    state = await request.json()
+    entry_dates = state.get("entry_dates", {})
+    entry_features = state.get("entry_features", {})
+
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO position_state (strategy, entry_dates, entry_features, updated_at) "
+                    "VALUES (%s, %s, %s, now()) "
+                    "ON CONFLICT (strategy) DO UPDATE SET entry_dates = EXCLUDED.entry_dates, "
+                    "entry_features = EXCLUDED.entry_features, updated_at = now()",
+                    (strategy, json.dumps(entry_dates), json.dumps(entry_features)),
+                )
+                conn.commit()
+            return {"ok": True}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
+    position_state_local_path(strategy).parent.mkdir(exist_ok=True)
+    position_state_local_path(strategy).write_text(json.dumps(entry_dates, indent=2))
+    entry_features_local_path(strategy).write_text(json.dumps(entry_features, indent=2))
     return {"ok": True}
 
 

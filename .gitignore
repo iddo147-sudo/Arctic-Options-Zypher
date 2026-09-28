@@ -9,5 +9,6 @@ __pycache__/
 webapp/agent_status*.json
 webapp/agent_trades.json
 webapp/agent_position_state*.json
+webapp/agent_entry_features*.json
 webapp/kill_switch_state.json
 webapp/revalidation_runs.json
