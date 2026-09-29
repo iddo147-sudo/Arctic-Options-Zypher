@@ -68,6 +68,7 @@ TRADES_PATH = BASE_DIR / "agent_trades.json"  # local-dev fallback only when DAT
 CLOSED_TRADES_PATH = BASE_DIR / "agent_closed_trades.json"  # local-dev fallback only when DATABASE_URL is unset
 KILL_SWITCH_PATH = BASE_DIR / "kill_switch_state.json"  # local-dev fallback only when DATABASE_URL is unset
 PROFIT_LOCK_PATH = BASE_DIR / "profit_lock_state.json"  # local-dev fallback only when DATABASE_URL is unset
+MANUAL_PAUSE_PATH = BASE_DIR / "manual_pause_state.json"  # local-dev fallback only when DATABASE_URL is unset
 REVALIDATION_PATH = BASE_DIR / "revalidation_runs.json"  # local-dev fallback only when DATABASE_URL is unset
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -209,12 +210,34 @@ def _ensure_profit_lock_table():
         conn.commit()
 
 
+def _ensure_manual_pause_table():
+    """2026-09-29, explicit user request -- "stop new positions for 5 days period to analyze
+    markets through news only": a human-triggered, self-expiring pause, distinct from both the
+    kill switch (equity floor, needs a human to clear) and the profit lock (automatic monthly
+    target). One row, wholesale-overwritten by pause_trading.py -- see that script for how a
+    human actually sets/clears this, and check_manual_pause() in paper_trade_alpaca.py for how
+    the agent reads it."""
+    if not DATABASE_URL:
+        return
+    with _db_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS manual_pause (
+                id TEXT PRIMARY KEY,
+                paused_until TIMESTAMPTZ,
+                reason TEXT,
+                started_at TIMESTAMPTZ
+            )
+        """)
+        conn.commit()
+
+
 try:
     _ensure_trades_table()
     _ensure_closed_trades_table()
     _ensure_position_state_table()
     _ensure_kill_switch_table()
     _ensure_profit_lock_table()
+    _ensure_manual_pause_table()
     _ensure_revalidation_table()
 except psycopg2.Error as e:
     # Don't take down the whole dashboard over a DB hiccup at startup -- a real connectivity
@@ -700,6 +723,94 @@ async def update_profit_lock(request: Request):
             print(f"[warn] Postgres write failed, falling back to local file: {e}")
 
     PROFIT_LOCK_PATH.write_text(json.dumps(state, indent=2))
+    return {"ok": True}
+
+
+# ---- manual pause (2026-09-29, explicit user request -- "stop new positions for 5 days
+# period to analyze markets through news only") -----------------------------------------
+# Human-triggered like the kill switch (require_reader on start/cancel -- only someone with
+# the dashboard password can set or lift it), but self-expiring like the profit lock (no
+# reset call needed once paused_until passes -- see check_manual_pause() in
+# paper_trade_alpaca.py). Kept alongside the automatic monthly profit lock, not instead of
+# it -- explicit user choice (2026-09-29): "both keep auto lock". Set/cleared from
+# pause_trading.py, not the dashboard UI.
+
+
+def _manual_pause_state() -> dict:
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute("SELECT paused_until, reason, started_at FROM manual_pause WHERE id = 'global'")
+                row = cur.fetchone()
+            if row:
+                return {"paused_until": row[0].isoformat() if row[0] else None, "reason": row[1],
+                        "started_at": row[2].isoformat() if row[2] else None}
+            return {}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres read failed, falling back to local file: {e}")
+
+    if not MANUAL_PAUSE_PATH.exists():
+        return {}
+    return json.loads(MANUAL_PAUSE_PATH.read_text())
+
+
+@app.get("/api/manual_pause", dependencies=[Depends(require_agent)])
+def manual_pause_status():
+    """The agent's own read path, checked at the start of every run -- same require_agent
+    (bearer token) gate as kill_switch/profit_lock's GETs, since this is agent-to-server
+    traffic, not a human viewing the dashboard."""
+    return _manual_pause_state()
+
+
+@app.post("/api/manual_pause/start", dependencies=[Depends(require_reader)])
+async def start_manual_pause(request: Request):
+    """Human-only (dashboard password). Wholesale overwrite -- triggering this again while
+    already paused resets the window from now, it doesn't stack with whatever was left."""
+    body = await request.json()
+    days = body.get("days", 5)
+    reason = body.get("reason") or f"manual {days}-day pause"
+
+    import datetime as _dt
+    started_at = _dt.datetime.now(_dt.timezone.utc)
+    paused_until = started_at + _dt.timedelta(days=days)
+    _notify_phone("MANUAL PAUSE STARTED", f"{reason} -- no new entries until {paused_until.isoformat()}.")
+
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO manual_pause (id, paused_until, reason, started_at) "
+                    "VALUES ('global', %s, %s, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET paused_until = EXCLUDED.paused_until, "
+                    "reason = EXCLUDED.reason, started_at = EXCLUDED.started_at",
+                    (paused_until, reason, started_at),
+                )
+                conn.commit()
+            return {"ok": True, "paused_until": paused_until.isoformat()}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
+    MANUAL_PAUSE_PATH.write_text(json.dumps({
+        "paused_until": paused_until.isoformat(), "reason": reason,
+        "started_at": started_at.isoformat(),
+    }, indent=2))
+    return {"ok": True, "paused_until": paused_until.isoformat()}
+
+
+@app.post("/api/manual_pause/cancel", dependencies=[Depends(require_reader)])
+def cancel_manual_pause():
+    """Human-only -- lift the pause early instead of waiting out the full window."""
+    if DATABASE_URL:
+        try:
+            with _db_connection() as conn, conn.cursor() as cur:
+                cur.execute("DELETE FROM manual_pause WHERE id = 'global'")
+                conn.commit()
+            return {"ok": True}
+        except psycopg2.Error as e:
+            print(f"[warn] Postgres write failed, falling back to local file: {e}")
+
+    if MANUAL_PAUSE_PATH.exists():
+        MANUAL_PAUSE_PATH.unlink()
     return {"ok": True}
 
 

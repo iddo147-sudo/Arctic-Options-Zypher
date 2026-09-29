@@ -83,6 +83,11 @@ CLOSED_TRADES_PATH = WEBAPP_DIR / "agent_closed_trades.json"
 # safe after then we can control profit": local-dev fallback only, mirrors kill_switch's own
 # split -- see webapp/main.py's /api/profit_lock for the Postgres path.
 PROFIT_LOCK_PATH = WEBAPP_DIR / "profit_lock_state.json"
+# 2026-09-29, explicit user request -- "stop new positions for 5 days period to analyze
+# markets through news only": local-dev fallback only, same shape as PROFIT_LOCK_PATH above --
+# see webapp/main.py's /api/manual_pause for the Postgres path, and pause_trading.py (repo
+# root) for how a human actually sets/clears this.
+MANUAL_PAUSE_PATH = WEBAPP_DIR / "manual_pause_state.json"
 
 
 def status_path(strategy: str) -> pathlib.Path:
@@ -246,6 +251,37 @@ def check_profit_lock(equity: float) -> tuple[bool, str | None]:
         return True, reason
 
     return False, None
+
+
+# Manual pause (2026-09-29, explicit user request -- "stop new positions for 5 days period to
+# analyze markets through news only"): human-triggered via pause_trading.py, NOT this script --
+# this side only ever reads the state and halts new entries while paused_until is in the
+# future. Kept ALONGSIDE the automatic profit lock above, not instead of it (explicit user
+# choice, "both keep auto lock") -- either one halting is enough, checked independently in
+# run(). Self-expiring like the profit lock (paused_until just passes), so unlike the kill
+# switch this never needs a human to explicitly clear it once the window's up -- but unlike
+# the profit lock, a human decides WHEN it starts and for how long, not an automatic target.
+def _load_local_manual_pause() -> dict:
+    if MANUAL_PAUSE_PATH.exists():
+        return json.loads(MANUAL_PAUSE_PATH.read_text())
+    return {}
+
+
+def check_manual_pause() -> tuple[bool, str | None]:
+    """Returns (halted, reason). Same local-file/dashboard split as check_profit_lock, but
+    read-only from here -- see pause_trading.py for the human-facing start/cancel commands."""
+    if not DASHBOARD_URL or not AGENT_REPORT_TOKEN:
+        state = _load_local_manual_pause()
+    else:
+        state = _get("/api/manual_pause") or {}
+
+    paused_until = state.get("paused_until")
+    if not paused_until:
+        return False, None
+    if datetime.datetime.now(datetime.timezone.utc) >= datetime.datetime.fromisoformat(paused_until):
+        return False, None
+    reason = state.get("reason") or "manual pause"
+    return True, f"{reason} -- paused until {paused_until}"
 
 
 def _report(path: str, payload: dict):
@@ -643,6 +679,14 @@ def run(strategy: str, symbols: list[str], shares: int):
         if halted:
             print(f"[{strategy}] PROFIT LOCK ACTIVE -- {halt_reason}. No new entries this run "
                   f"(existing positions still monitored for exits).")
+        else:
+            # Same "only check the next one if nothing's halted yet" chain -- 2026-09-29,
+            # explicit user request to keep this ALONGSIDE the automatic profit lock, not
+            # instead of it.
+            halted, halt_reason = check_manual_pause()
+            if halted:
+                print(f"[{strategy}] MANUAL PAUSE ACTIVE -- {halt_reason}. No new entries this run "
+                      f"(existing positions still monitored for exits).")
 
     entry_dates, entry_features = load_position_state(strategy)
     tickers = {}
@@ -705,9 +749,10 @@ def run(strategy: str, symbols: list[str], shares: int):
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "buying_power": buying_power,
         "equity": equity,
-        # Generic name, not "kill_switch_active" -- 2026-09-26: halted can now come from EITHER
-        # the kill switch or the profit lock, and this field doesn't distinguish which. Nothing
-        # in the dashboard reads this key yet, so this rename is free.
+        # Generic name, not "kill_switch_active" -- 2026-09-26: halted can now come from the
+        # kill switch, the profit lock, OR (2026-09-29) the manual pause, and this field
+        # doesn't distinguish which. Nothing in the dashboard reads this key yet, so this
+        # rename is free.
         "entries_halted": halted,
         "entries_halted_reason": halt_reason,
         "last_action": summary,
