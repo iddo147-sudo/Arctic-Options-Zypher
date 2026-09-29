@@ -389,6 +389,19 @@ def require_agent(request: Request):
         raise HTTPException(status_code=401, detail="invalid or missing agent token")
 
 
+def require_agent_or_reader(request: Request):
+    """2026-09-29, for GET /api/manual_pause only -- that endpoint has two legitimate
+    callers with two different credentials: paper_trade_alpaca.py's check_manual_pause()
+    (agent bearer token, same as kill_switch/profit_lock's GETs) AND pause_trading.py's
+    `status` command (a human checking with the dashboard password, same as any other
+    require_reader read). Branch on which scheme the caller actually sent rather than
+    accepting either credential on the other endpoints too."""
+    header = request.headers.get("authorization", "")
+    if header.startswith("Bearer "):
+        return require_agent(request)
+    return require_reader(request)
+
+
 app = FastAPI(title="Futures Bot Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -754,11 +767,11 @@ def _manual_pause_state() -> dict:
     return json.loads(MANUAL_PAUSE_PATH.read_text())
 
 
-@app.get("/api/manual_pause", dependencies=[Depends(require_agent)])
+@app.get("/api/manual_pause", dependencies=[Depends(require_agent_or_reader)])
 def manual_pause_status():
-    """The agent's own read path, checked at the start of every run -- same require_agent
-    (bearer token) gate as kill_switch/profit_lock's GETs, since this is agent-to-server
-    traffic, not a human viewing the dashboard."""
+    """Unlike kill_switch/profit_lock's GETs, this one has two real callers: the agent
+    (bearer token, checked every run) AND a human via pause_trading.py's `status` command
+    (dashboard password) -- see require_agent_or_reader for why it accepts both."""
     return _manual_pause_state()
 
 
